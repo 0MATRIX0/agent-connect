@@ -1,8 +1,9 @@
 import { promises as fs } from 'fs';
 import path from 'path';
+import os from 'os';
 import { PushSubscription } from './webpush';
 
-const DATA_DIR = path.join(process.cwd(), 'data');
+const DATA_DIR = process.env.AGENT_CONNECT_DATA_DIR || path.join(os.homedir(), '.agent-connect', 'data');
 const SUBSCRIPTIONS_FILE = path.join(DATA_DIR, 'subscriptions.json');
 
 async function ensureDataDir(): Promise<void> {

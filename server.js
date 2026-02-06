@@ -8,12 +8,29 @@ const fs = require('fs');
 const path = require('path');
 const webpush = require('web-push');
 
+const os = require('os');
+
 const PORT = process.env.API_PORT || 3109;
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = process.env.AGENT_CONNECT_DATA_DIR || path.join(os.homedir(), '.agent-connect', 'data');
 const SUBSCRIPTIONS_FILE = path.join(DATA_DIR, 'subscriptions.json');
 
-// Load environment variables from .env.local
-function loadEnv() {
+// Load config from ~/.agent-connect/config.json, then .env.local as fallback
+function loadConfig() {
+  // Try ~/.agent-connect/config.json first
+  try {
+    const configPath = path.join(os.homedir(), '.agent-connect', 'config.json');
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    if (config.vapidPublicKey) process.env.VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || config.vapidPublicKey;
+    if (config.vapidPublicKey) process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || config.vapidPublicKey;
+    if (config.vapidPrivateKey) process.env.VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || config.vapidPrivateKey;
+    if (config.vapidSubject) process.env.VAPID_SUBJECT = process.env.VAPID_SUBJECT || config.vapidSubject;
+    if (config.hostname) process.env.APP_HOSTNAME = process.env.APP_HOSTNAME || config.hostname;
+    if (config.apiPort) process.env.API_PORT = process.env.API_PORT || String(config.apiPort);
+    return true;
+  } catch {
+    // Fall back to .env.local
+  }
+
   try {
     const envPath = path.join(__dirname, '.env.local');
     const envContent = fs.readFileSync(envPath, 'utf-8');
@@ -23,15 +40,17 @@ function loadEnv() {
         process.env[key.trim()] = valueParts.join('=').trim();
       }
     });
-  } catch (e) {
-    console.warn('Warning: .env.local not found, using environment variables');
+    return true;
+  } catch {
+    console.warn('Warning: No config found. Run: agent-connect setup');
+    return false;
   }
 }
 
-loadEnv();
+loadConfig();
 
 // Configure web-push
-const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+const publicKey = process.env.VAPID_PUBLIC_KEY || process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
 const privateKey = process.env.VAPID_PRIVATE_KEY;
 const subject = process.env.VAPID_SUBJECT || 'mailto:admin@example.com';
 
