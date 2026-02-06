@@ -11,7 +11,6 @@ self.addEventListener('push', (event) => {
         title: 'Agent Connect',
         body: 'New notification',
         icon: '/icon-192.png',
-        badge: '/icon-192.png',
         type: 'completed',
       };
 
@@ -23,28 +22,35 @@ self.addEventListener('push', (event) => {
         }
       }
 
-      // Choose tag color/icon based on type
-      const typeConfig = {
-        completed: { tag: 'completed', vibrate: [100, 50, 100] },
-        input_needed: { tag: 'input_needed', vibrate: [200, 100, 200, 100, 200] },
-        error: { tag: 'error', vibrate: [500, 200, 500] },
-      };
-
-      const config = typeConfig[data.type] || typeConfig.completed;
+      // Use unique tag so each notification shows as a new banner on iOS
+      // (iOS silently replaces notifications with the same tag)
+      const tag = `${data.type || 'completed'}-${Date.now()}`;
 
       const options = {
         body: data.body,
         icon: data.icon,
-        badge: data.badge,
-        tag: config.tag,
-        vibrate: config.vibrate,
+        tag: tag,
+        renotify: true,
         data: {
           url: '/',
           type: data.type,
           ...data.data,
         },
-        requireInteraction: data.type === 'input_needed',
       };
+
+      // vibrate and requireInteraction are not supported on iOS
+      // Only add them on platforms that support them
+      if ('vibrate' in navigator) {
+        const vibratePatterns = {
+          completed: [100, 50, 100],
+          input_needed: [200, 100, 200, 100, 200],
+          error: [500, 200, 500],
+        };
+        options.vibrate = vibratePatterns[data.type] || vibratePatterns.completed;
+        if (data.type === 'input_needed') {
+          options.requireInteraction = true;
+        }
+      }
 
       await self.registration.showNotification(data.title, options);
     } catch (err) {
