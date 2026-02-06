@@ -19,7 +19,7 @@ export interface PushSubscription {
 export interface NotificationPayload {
   title: string;
   body: string;
-  type?: 'completed' | 'input_needed' | 'error';
+  type?: 'completed' | 'task_done' | 'planning_complete' | 'approval_needed' | 'input_needed' | 'command_execution' | 'error';
   icon?: string;
   badge?: string;
   data?: Record<string, unknown>;

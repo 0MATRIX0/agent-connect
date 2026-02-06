@@ -43,11 +43,15 @@ self.addEventListener('push', (event) => {
       if ('vibrate' in navigator) {
         const vibratePatterns = {
           completed: [100, 50, 100],
+          task_done: [100, 50, 100],
+          planning_complete: [100, 50, 100, 50, 100],
+          approval_needed: [200, 100, 200, 100, 200],
           input_needed: [200, 100, 200, 100, 200],
+          command_execution: [100, 50, 100],
           error: [500, 200, 500],
         };
         options.vibrate = vibratePatterns[data.type] || vibratePatterns.completed;
-        if (data.type === 'input_needed') {
+        if (data.type === 'input_needed' || data.type === 'approval_needed') {
           options.requireInteraction = true;
         }
       }

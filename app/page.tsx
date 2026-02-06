@@ -305,10 +305,14 @@ export default function Home() {
 
         <details className="mt-4">
           <summary className="cursor-pointer text-gray-400 hover:text-white">
-            Example curl command
+            Example usage
           </summary>
           <pre className="bg-gray-900 rounded p-3 mt-2 text-xs overflow-x-auto">
-{`curl -X POST ${apiUrl} \\
+{`# Using the CLI (recommended)
+agent-connect notify "Task completed!" --type completed
+
+# Using curl
+curl -X POST ${apiUrl} \\
   -H "Content-Type: application/json" \\
   -d '{"title": "Claude Code", "body": "Task completed!", "type": "completed"}'`}
           </pre>
@@ -344,10 +348,31 @@ export default function Home() {
             </div>
           </div>
           <div className="flex items-start gap-3">
+            <span className="text-blue-400">●</span>
+            <div>
+              <code className="bg-gray-900 px-2 py-1 rounded">planning_complete</code>
+              <span className="text-gray-400 ml-2">- Planning finished, ready for review</span>
+            </div>
+          </div>
+          <div className="flex items-start gap-3">
+            <span className="text-orange-500">●</span>
+            <div>
+              <code className="bg-gray-900 px-2 py-1 rounded">approval_needed</code>
+              <span className="text-gray-400 ml-2">- Need approval before proceeding</span>
+            </div>
+          </div>
+          <div className="flex items-start gap-3">
             <span className="text-yellow-500">●</span>
             <div>
               <code className="bg-gray-900 px-2 py-1 rounded">input_needed</code>
-              <span className="text-gray-400 ml-2">- Agent needs your attention</span>
+              <span className="text-gray-400 ml-2">- Agent needs information or clarification</span>
+            </div>
+          </div>
+          <div className="flex items-start gap-3">
+            <span className="text-purple-400">●</span>
+            <div>
+              <code className="bg-gray-900 px-2 py-1 rounded">command_execution</code>
+              <span className="text-gray-400 ml-2">- A command finished executing</span>
             </div>
           </div>
           <div className="flex items-start gap-3">
