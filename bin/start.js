@@ -1,13 +1,14 @@
 const { fork, execSync } = require('child_process');
 const path = require('path');
-const { loadConfig, saveConfig, getDataDir, isSetupComplete, generateEnvLocal } = require('./config');
+const { loadConfig, saveConfig, getDataDir, isSetupComplete, generateEnvLocal, findAvailablePort } = require('./config');
 
 const PACKAGE_ROOT = path.resolve(__dirname, '..');
 
-function ensureTailscale(config) {
+function ensureTailscale(config, runtimePorts) {
   const hostname = config.hostname;
-  const apiPort = config.apiPort || 3109;
-  const frontendPort = config.frontendPort || 3110;
+  const configApiPort = config.apiPort || 3109;
+  const apiPort = runtimePorts?.apiPort || configApiPort;
+  const frontendPort = runtimePorts?.frontendPort || config.frontendPort || 3110;
 
   // Check if tailscaled is running
   try {
@@ -30,32 +31,65 @@ function ensureTailscale(config) {
   // Set up tailscale serve proxies
   console.log('  Tailscale Serve: configuring proxies...');
 
-  // Check if proxies are already configured
-  let serveStatus = '';
+  // Parse existing serve config via JSON for reliable proxy target detection
+  let serveConfig = null;
   try {
-    serveStatus = execSync('tailscale serve status', { stdio: 'pipe', timeout: 5000 }).toString();
+    const serveJson = execSync('tailscale serve status --json', { stdio: 'pipe', timeout: 5000 }).toString();
+    serveConfig = JSON.parse(serveJson);
   } catch {
-    // No serve config yet, will configure below
+    // No serve config or JSON parsing failed, will configure from scratch
+  }
+
+  function getExistingProxy(cfg, host, externalPort) {
+    if (!cfg) return null;
+    // Tailscale serve status JSON structure: { TCP/Web: { "hostname:port": { Handlers: { "/": { Proxy: "http://..." } } } } }
+    const key = externalPort === 443 ? `https://${host}:443` : `https://${host}:${externalPort}`;
+    // Try multiple possible key formats
+    const keys = [
+      key,
+      externalPort === 443 ? `https://${host}` : null,
+      `${host}:${externalPort}`,
+      `${host}`,
+    ].filter(Boolean);
+
+    const web = cfg.Web || {};
+    for (const k of keys) {
+      if (web[k]?.Handlers?.['/']?.Proxy) {
+        return web[k].Handlers['/'].Proxy;
+      }
+    }
+    return null;
   }
 
   const proxyConfigs = [
-    { name: 'Frontend', https: '443', target: frontendPort, url: `https://${hostname}` },
-    { name: 'API',      https: String(apiPort), target: apiPort, url: `https://${hostname}:${apiPort}` },
+    { name: 'Frontend', externalPort: 443, https: '443', target: frontendPort, url: `https://${hostname}` },
+    { name: 'API',      externalPort: configApiPort, https: String(configApiPort), target: apiPort, url: `https://${hostname}:${configApiPort}` },
   ];
 
   for (const proxy of proxyConfigs) {
-    // Skip if this proxy is already configured (status output contains "localhost:<port>")
-    if (serveStatus.includes(`localhost:${proxy.target}`)) {
-      console.log(`    ${proxy.name}: already configured (${proxy.url} -> localhost:${proxy.target})`);
-      continue;
+    const expectedTarget = `http://127.0.0.1:${proxy.target}`;
+    const existingTarget = getExistingProxy(serveConfig, hostname, proxy.externalPort);
+
+    if (existingTarget) {
+      // Check if existing target already points to the right port
+      const existingPort = existingTarget.match(/:(\d+)$/)?.[1];
+      if (existingPort === String(proxy.target)) {
+        console.log(`    ${proxy.name}: already configured (${proxy.url} -> localhost:${proxy.target})`);
+        continue;
+      }
+      // Target is wrong, remove old proxy first
+      console.log(`    ${proxy.name}: updating proxy (${existingTarget} -> ${expectedTarget})`);
+      try {
+        execSync(`tailscale serve --https ${proxy.https} off`, { stdio: 'pipe', timeout: 10000 });
+      } catch {
+        console.warn(`    ${proxy.name}: failed to remove old proxy, will try to overwrite`);
+      }
     }
 
     const cmd = `tailscale serve --bg --https ${proxy.https} http://localhost:${proxy.target}`;
     console.log(`    ${proxy.name}: ${cmd}`);
     try {
       const start = Date.now();
-      // Use stdio: 'inherit' so user can see and act on any auth prompts
-      // (e.g. "Serve is not enabled on your tailnet. To enable, visit: ...")
       execSync(cmd, { stdio: 'inherit' });
       console.log(`    ${proxy.name}: ${proxy.url} -> localhost:${proxy.target} (${Date.now() - start}ms)`);
     } catch (err) {
@@ -86,7 +120,7 @@ function setEnvFromConfig(config) {
   process.env.NEXT_APP_DIR = PACKAGE_ROOT;
 }
 
-function startServers() {
+async function startServers() {
   if (!isSetupComplete()) {
     console.error('Setup not complete. Run: agent-connect setup');
     process.exit(1);
@@ -121,17 +155,55 @@ function startServers() {
   const apiPort = config.apiPort || 3109;
   const frontendPort = config.frontendPort || 3110;
 
+  // Resolve available ports (fallback if configured ports are busy)
+  let actualApiPort = apiPort;
+  let actualFrontendPort = frontendPort;
+
+  try {
+    const apiResult = await findAvailablePort(apiPort, '127.0.0.1');
+    actualApiPort = apiResult.port;
+    if (apiResult.changed) {
+      console.log(`  Port ${apiPort} in use, API will use port ${actualApiPort}`);
+    }
+
+    const frontendResult = await findAvailablePort(frontendPort, '127.0.0.1');
+    actualFrontendPort = frontendResult.port;
+
+    // Ensure frontend doesn't collide with API port
+    if (actualFrontendPort === actualApiPort) {
+      const retryResult = await findAvailablePort(actualFrontendPort + 1, '127.0.0.1');
+      actualFrontendPort = retryResult.port;
+    }
+
+    if (actualFrontendPort !== frontendPort) {
+      console.log(`  Port ${frontendPort} in use, frontend will use port ${actualFrontendPort}`);
+    }
+
+    // Update env vars with actual ports
+    process.env.API_PORT = String(actualApiPort);
+    process.env.PORT = String(actualFrontendPort);
+  } catch (err) {
+    console.error(`  Fatal: ${err.message}`);
+    process.exit(1);
+  }
+
   console.log();
   console.log('  Agent Connect');
   console.log('  =============');
   console.log();
 
   // Ensure Tailscale is running and serve proxies are set up
-  ensureTailscale(config);
+  ensureTailscale(config, { apiPort: actualApiPort, frontendPort: actualFrontendPort });
 
   console.log();
   console.log(`  Frontend: https://${hostname}`);
+  if (actualFrontendPort !== frontendPort) {
+    console.log(`            (internal: localhost:${actualFrontendPort})`);
+  }
   console.log(`  API:      https://${hostname}:${apiPort}`);
+  if (actualApiPort !== apiPort) {
+    console.log(`            (internal: localhost:${actualApiPort})`);
+  }
   console.log();
 
   // Fork API server
@@ -191,5 +263,8 @@ function startServers() {
 module.exports = { startServers };
 
 if (require.main === module) {
-  startServers();
+  startServers().catch((err) => {
+    console.error(`Fatal: ${err.message}`);
+    process.exit(1);
+  });
 }
