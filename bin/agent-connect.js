@@ -22,12 +22,23 @@ const HELP = `
 
   Notify options:
     --title TITLE              Notification title (default: "Agent Connect")
-    --type TYPE                Type: completed, input_needed, error (default: completed)
+    --type TYPE                Notification type (default: completed)
+
+  Notification types:
+    completed                  Task/request finished successfully (default)
+    planning_complete          Finished planning, ready for review
+    approval_needed            Need approval before proceeding
+    input_needed               Need information or clarification
+    command_execution          A command finished executing
+    error                      Something failed
 
   Examples:
-    agent-connect notify "Task finished!"
-    agent-connect notify "Need input" --type input_needed
-    agent-connect notify "Build failed" --title "CI" --type error
+    agent-connect notify "Refactored auth module" --type completed
+    agent-connect notify "Ready to implement new endpoint" --type planning_complete
+    agent-connect notify "Delete legacy files?" --type approval_needed
+    agent-connect notify "Need clarification on API schema" --type input_needed
+    agent-connect notify "npm install completed" --type command_execution
+    agent-connect notify "Build failed: missing dep" --title "CI" --type error
 `;
 
 async function main() {
@@ -170,27 +181,38 @@ async function sendNotify(args) {
     process.exit(1);
   }
 
-  const apiUrl = `https://${config.hostname}:${config.apiPort}/api/notify`;
-
-  try {
-    const res = await fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, body, type }),
-    });
-
-    const data = await res.json();
-    if (res.ok) {
-      console.log(`  Sent: ${data.message}`);
-    } else {
-      console.error(`  Error: ${data.error}`);
-      process.exit(1);
-    }
-  } catch (err) {
-    console.error(`  Failed to send notification: ${err.message}`);
-    console.error('  Is Agent Connect running? Try: agent-connect start');
-    process.exit(1);
+  const knownTypes = ['completed', 'task_done', 'planning_complete', 'approval_needed', 'input_needed', 'command_execution', 'error'];
+  if (!knownTypes.includes(type)) {
+    console.warn(`  Warning: unknown type "${type}" — will be treated as "completed" by the client`);
   }
+
+  // Try local HTTP first (fastest, always works when server is running on same machine),
+  // then fall back to Tailscale HTTPS URL
+  const localUrl = `http://127.0.0.1:${config.apiPort}/api/notify`;
+  const remoteUrl = `https://${config.hostname}:${config.apiPort}/api/notify`;
+  const payload = JSON.stringify({ title, body, type });
+  const headers = { 'Content-Type': 'application/json' };
+
+  let lastError;
+  for (const apiUrl of [localUrl, remoteUrl]) {
+    try {
+      const res = await fetch(apiUrl, { method: 'POST', headers, body: payload });
+      const data = await res.json();
+      if (res.ok) {
+        console.log(`  Sent: ${data.message}`);
+        return;
+      } else {
+        console.error(`  Error: ${data.error}`);
+        process.exit(1);
+      }
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  console.error(`  Failed to send notification: ${lastError.message}`);
+  console.error('  Is Agent Connect running? Try: agent-connect start');
+  process.exit(1);
 }
 
 main().catch(err => {
