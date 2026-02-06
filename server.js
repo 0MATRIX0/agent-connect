@@ -233,7 +233,7 @@ async function handleRequest(req, res) {
             await webpush.sendNotification(subscription, notificationPayload, pushOptions);
             sentCount++;
           } catch (error) {
-            if (error.statusCode === 404 || error.statusCode === 410) {
+            if (error.statusCode === 404 || error.statusCode === 410 || error.statusCode === 403) {
               invalidEndpoints.push(subscription.endpoint);
             } else {
               console.error('Failed to send notification:', {

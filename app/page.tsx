@@ -82,7 +82,7 @@ export default function Home() {
       // Step 1: Register service worker fresh (bypass HTTP cache)
       setMessage('Registering service worker...');
       const registration = await withTimeout(
-        navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }),
+        navigator.serviceWorker.register('/push-sw.js', { updateViaCache: 'none' }),
         10000,
         'Service worker registration timed out'
       );
