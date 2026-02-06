@@ -70,10 +70,19 @@ export default function Home() {
 
   async function subscribe() {
     try {
-      // Step 1: Register service worker
+      // Step 0: Clean up stale service workers and caches
+      setMessage('Preparing service worker...');
+      const existingRegs = await navigator.serviceWorker.getRegistrations();
+      for (const reg of existingRegs) {
+        await reg.unregister();
+      }
+      const cacheNames = await caches.keys();
+      await Promise.all(cacheNames.map(name => caches.delete(name)));
+
+      // Step 1: Register service worker fresh (bypass HTTP cache)
       setMessage('Registering service worker...');
       const registration = await withTimeout(
-        navigator.serviceWorker.register('/sw.js'),
+        navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }),
         10000,
         'Service worker registration timed out'
       );
@@ -354,14 +363,49 @@ export default function Home() {
   );
 }
 
-// Helper: wait for a service worker to be active for this scope.
-// Uses navigator.serviceWorker.ready which handles skipWaiting race conditions
-// (where the tracked SW goes redundant before registration.active is updated).
+// Helper: wait for a service worker registration to reach the 'activated' state.
+// Tracks the installing/waiting worker AND listens for updatefound in case the
+// browser replaces the worker mid-install (e.g. with skipWaiting enabled).
 function waitForActivation(registration: ServiceWorkerRegistration): Promise<void> {
-  if (registration.active) {
-    return Promise.resolve();
-  }
-  return navigator.serviceWorker.ready.then(() => {});
+  return new Promise<void>((resolve, reject) => {
+    if (registration.active) {
+      resolve();
+      return;
+    }
+
+    let settled = false;
+    const done = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      err ? reject(err) : resolve();
+    };
+
+    const trackWorker = (sw: ServiceWorker) => {
+      sw.addEventListener('statechange', () => {
+        if (sw.state === 'activated' || registration.active) {
+          done();
+        } else if (sw.state === 'redundant') {
+          if (registration.active) {
+            done();
+          } else {
+            done(new Error('Service worker install failed (went redundant)'));
+          }
+        }
+      });
+    };
+
+    const sw = registration.installing || registration.waiting;
+    if (sw) {
+      trackWorker(sw);
+    }
+
+    // Catch new installations triggered by the browser
+    registration.addEventListener('updatefound', () => {
+      if (registration.installing) {
+        trackWorker(registration.installing);
+      }
+    });
+  });
 }
 
 // Helper: reject if a promise doesn't resolve within `ms` milliseconds
