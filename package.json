@@ -1,6 +1,6 @@
 {
   "name": "agent-connect",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Push notifications for AI coding agents — get notified when Claude Code, Copilot, or other agents need attention",
   "keywords": [
     "push-notifications",
@@ -57,6 +57,9 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "boxen": "^5.1.2",
+    "chalk": "^4.1.2",
+    "gradient-string": "^2.0.2",
     "next": "14.2.3",
     "next-pwa": "^5.6.0",
     "react": "^18.3.1",
