@@ -135,18 +135,37 @@ async function runSetup() {
 
   // Step 8: Set up Tailscale Serve
   print('  Setting up Tailscale Serve...');
+
+  // Check if proxies are already configured
+  let serveStatus = '';
   try {
-    exec(`tailscale serve --bg --https 443 http://localhost:${frontendPort}`);
-    print(`    HTTPS :443 -> localhost:${frontendPort} (frontend)`);
-  } catch (e) {
-    print(`  Warning: Failed to set up frontend serve: ${e.message}`);
+    serveStatus = exec('tailscale serve status', { timeout: 5000, ignoreError: true }) || '';
+  } catch {
+    // No serve config yet
   }
 
-  try {
-    exec(`tailscale serve --bg --https ${apiPort} http://localhost:${apiPort}`);
-    print(`    HTTPS :${apiPort} -> localhost:${apiPort} (API)`);
-  } catch (e) {
-    print(`  Warning: Failed to set up API serve: ${e.message}`);
+  const proxyConfigs = [
+    { name: 'frontend', https: '443', target: frontendPort },
+    { name: 'API',      https: String(apiPort), target: apiPort },
+  ];
+
+  for (const proxy of proxyConfigs) {
+    if (serveStatus.includes(`localhost:${proxy.target}`)) {
+      print(`    HTTPS :${proxy.https} -> localhost:${proxy.target} (${proxy.name}) - already configured`);
+      continue;
+    }
+    try {
+      // Use stdio: 'inherit' so user can see and act on any auth prompts
+      // (e.g. "Serve is not enabled on your tailnet. To enable, visit: ...")
+      execSync(`tailscale serve --bg --https ${proxy.https} http://localhost:${proxy.target}`, { stdio: 'inherit' });
+      print(`    HTTPS :${proxy.https} -> localhost:${proxy.target} (${proxy.name})`);
+    } catch (e) {
+      if (e.code === 'ETIMEDOUT') {
+        print(`  Warning: Timed out setting up ${proxy.name} serve (30s)`);
+      } else {
+        print(`  Warning: Failed to set up ${proxy.name} serve: ${e.message}`);
+      }
+    }
   }
 
   // Step 9: Save config

@@ -54,15 +54,15 @@ function ensureTailscale(config) {
     console.log(`    ${proxy.name}: ${cmd}`);
     try {
       const start = Date.now();
-      execSync(cmd, { stdio: 'pipe', timeout: 30000 });
+      // Use stdio: 'inherit' so user can see and act on any auth prompts
+      // (e.g. "Serve is not enabled on your tailnet. To enable, visit: ...")
+      execSync(cmd, { stdio: 'inherit' });
       console.log(`    ${proxy.name}: ${proxy.url} -> localhost:${proxy.target} (${Date.now() - start}ms)`);
     } catch (err) {
       if (err.code === 'ETIMEDOUT') {
         console.error(`    ${proxy.name}: timed out after 30s`);
       } else {
-        const stderr = err.stderr ? err.stderr.toString().trim() : '';
-        const detail = stderr || err.message;
-        console.warn(`    ${proxy.name}: ${detail}`);
+        console.warn(`    ${proxy.name}: failed to configure (${err.message})`);
       }
     }
   }
