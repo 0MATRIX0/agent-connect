@@ -1,6 +1,6 @@
 {
   "name": "agent-connect",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Push notifications for AI coding agents — get notified when Claude Code, Copilot, or other agents need attention",
   "keywords": [
     "push-notifications",
