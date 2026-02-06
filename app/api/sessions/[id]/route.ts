@@ -2,14 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const API_SERVER = process.env.API_SERVER_URL || 'http://localhost:3109';
 
-export async function POST(request: NextRequest) {
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
   try {
-    const body = await request.text();
-    const res = await fetch(`${API_SERVER}/api/notify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-    });
+    const res = await fetch(`${API_SERVER}/api/sessions/${params.id}`);
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
   } catch {
@@ -17,10 +15,14 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function GET(request: NextRequest) {
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
   try {
-    const queryString = request.nextUrl.searchParams.toString();
-    const res = await fetch(`${API_SERVER}/api/notify?${queryString}`);
+    const res = await fetch(`${API_SERVER}/api/sessions/${params.id}`, {
+      method: 'DELETE',
+    });
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
   } catch {

@@ -50,6 +50,51 @@ app.prepare().then(() => {
     protocol = 'http';
   }
 
+  // Proxy WebSocket upgrade requests (/ws/*) to the API server on localhost:3109
+  server.on('upgrade', (req, socket, head) => {
+    const { pathname } = parse(req.url, true);
+    if (!pathname || !pathname.startsWith('/ws/')) {
+      // Let Next.js handle non-/ws/ upgrades (e.g. HMR in dev)
+      return;
+    }
+
+    const proxyReq = http.request({
+      hostname: '127.0.0.1',
+      port: 3109,
+      path: req.url,
+      method: req.method,
+      headers: req.headers,
+    });
+
+    proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
+      // Send the 101 Switching Protocols response back to the client
+      let rawHeaders = `HTTP/${proxyRes.httpVersion} ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n`;
+      for (let i = 0; i < proxyRes.rawHeaders.length; i += 2) {
+        rawHeaders += `${proxyRes.rawHeaders[i]}: ${proxyRes.rawHeaders[i + 1]}\r\n`;
+      }
+      rawHeaders += '\r\n';
+
+      socket.write(rawHeaders);
+      if (proxyHead && proxyHead.length) {
+        socket.write(proxyHead);
+      }
+
+      // Pipe bidirectionally
+      proxySocket.pipe(socket);
+      socket.pipe(proxySocket);
+
+      proxySocket.on('error', () => socket.destroy());
+      socket.on('error', () => proxySocket.destroy());
+    });
+
+    proxyReq.on('error', (err) => {
+      console.error('WebSocket proxy error:', err.message);
+      socket.destroy();
+    });
+
+    proxyReq.end();
+  });
+
   const displayHost = process.env.APP_HOSTNAME || hostname;
   server.listen(PORT, hostname, () => {
     console.log(`Next.js server running on ${protocol}://${displayHost}:${PORT}`);
