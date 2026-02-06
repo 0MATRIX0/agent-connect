@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import MessageInbox from './components/MessageInbox';
 
 type SubscriptionStatus = 'loading' | 'unsupported' | 'denied' | 'subscribed' | 'unsubscribed';
 
@@ -218,6 +219,11 @@ export default function Home() {
       <p className="text-gray-400 mb-8">
         Push notifications for AI coding agents like Claude Code
       </p>
+
+      {/* Message Inbox (only when subscribed) */}
+      {status === 'subscribed' && apiBaseUrl && (
+        <MessageInbox apiBaseUrl={apiBaseUrl} />
+      )}
 
       {/* Status Card */}
       <div className="bg-gray-800 rounded-lg p-6 mb-6">

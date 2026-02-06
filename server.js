@@ -10,9 +10,15 @@ const webpush = require('web-push');
 
 const os = require('os');
 
+const crypto = require('crypto');
+
 const PORT = process.env.API_PORT || 3109;
 const DATA_DIR = process.env.AGENT_CONNECT_DATA_DIR || path.join(os.homedir(), '.agent-connect', 'data');
 const SUBSCRIPTIONS_FILE = path.join(DATA_DIR, 'subscriptions.json');
+const MESSAGES_FILE = path.join(DATA_DIR, 'messages.json');
+
+// In-memory map of messageId -> Set<Response> for SSE wait connections
+const sseWaiters = new Map();
 
 // Load config from .env.local first (source of truth for VAPID keys used by browser),
 // then ~/.agent-connect/config.json as fallback for non-env settings
@@ -103,6 +109,83 @@ function getSubscriptions() {
 function saveSubscriptions(subscriptions) {
     ensureDataDir();
     fs.writeFileSync(SUBSCRIPTIONS_FILE, JSON.stringify(subscriptions, null, 2));
+}
+
+// Read messages
+function getMessages() {
+    ensureDataDir();
+    try {
+        const data = fs.readFileSync(MESSAGES_FILE, 'utf-8');
+        return JSON.parse(data);
+    } catch {
+        return [];
+    }
+}
+
+// Write messages
+function saveMessages(messages) {
+    ensureDataDir();
+    fs.writeFileSync(MESSAGES_FILE, JSON.stringify(messages, null, 2));
+}
+
+// Create a new message
+function createMessage({ type = 'notification', title = 'Agent Connect', body, notificationType = 'completed', options, allowCustom = true, timeoutSeconds }) {
+    const now = new Date();
+    const message = {
+        id: crypto.randomUUID(),
+        type,
+        status: type === 'question' ? 'pending' : 'responded',
+        title,
+        body,
+        notificationType,
+        createdAt: now.toISOString(),
+    };
+    if (type === 'question') {
+        message.options = options || [];
+        message.allowCustom = allowCustom;
+        if (timeoutSeconds) {
+            message.expiresAt = new Date(now.getTime() + timeoutSeconds * 1000).toISOString();
+        }
+    }
+    const messages = getMessages();
+    messages.push(message);
+    saveMessages(messages);
+    return message;
+}
+
+// Get a message by ID
+function getMessageById(id) {
+    const messages = getMessages();
+    return messages.find(m => m.id === id) || null;
+}
+
+// Respond to a message
+function respondToMessage(id, value, source = 'app') {
+    const messages = getMessages();
+    const message = messages.find(m => m.id === id);
+    if (!message) return { error: 'not_found' };
+    if (message.status === 'responded') return { error: 'already_responded', message };
+    message.status = 'responded';
+    message.response = {
+        value,
+        respondedAt: new Date().toISOString(),
+        source,
+    };
+    saveMessages(messages);
+
+    // Notify SSE waiters
+    const waiters = sseWaiters.get(id);
+    if (waiters) {
+        for (const waiterRes of waiters) {
+            try {
+                waiterRes.write(`event: response\ndata: ${JSON.stringify({ value, source, respondedAt: message.response.respondedAt })}\n\n`);
+                waiterRes.end();
+            } catch {}
+        }
+        sseWaiters.delete(id);
+    }
+
+    return { success: true, message };
 }
 
 // Parse JSON body
@@ -205,10 +288,18 @@ async function handleRequest(req, res) {
                 return sendJson(res, 400, { error: 'Title and body are required' });
             }
 
+            // Also create a message record for the inbox
+            const msg = createMessage({
+                type: 'notification',
+                title: payload.title,
+                body: payload.body,
+                notificationType: payload.type || 'completed',
+            });
+
             const subscriptions = getSubscriptions();
 
             if (subscriptions.length === 0) {
-                return sendJson(res, 200, { success: true, message: 'No subscriptions to notify', sent: 0 });
+                return sendJson(res, 200, { success: true, message: 'No subscriptions to notify', sent: 0, messageId: msg.id });
             }
 
             const invalidEndpoints = [];
@@ -219,7 +310,8 @@ async function handleRequest(req, res) {
                 body: payload.body,
                 icon: payload.icon || '/icon-192.png',
                 type: payload.type || 'completed',
-                data: payload.data || {},
+                messageId: msg.id,
+                data: { messageId: msg.id, ...payload.data || {} },
             });
 
             const pushOptions = {
@@ -279,7 +371,155 @@ async function handleRequest(req, res) {
                 message: `Notification sent to ${sentCount} subscriber(s)`,
                 sent: sentCount,
                 cleaned: invalidEndpoints.length,
+                messageId: msg.id,
             });
+        }
+
+        // Create message (notification or question) + send push
+        if (pathname === '/api/messages' && req.method === 'POST') {
+            const payload = await parseBody(req);
+            if (!payload.body) {
+                return sendJson(res, 400, { error: 'body is required' });
+            }
+            const message = createMessage({
+                type: payload.type || 'notification',
+                title: payload.title || 'Agent Connect',
+                body: payload.body,
+                notificationType: payload.notificationType || 'completed',
+                options: payload.options,
+                allowCustom: payload.allowCustom !== false,
+                timeoutSeconds: payload.timeout,
+            });
+
+            // Send push notification
+            const subscriptions = getSubscriptions();
+            if (subscriptions.length > 0) {
+                const pushPayload = JSON.stringify({
+                    title: message.title,
+                    body: message.body,
+                    icon: '/icon-192.png',
+                    type: message.notificationType,
+                    messageType: message.type,
+                    messageId: message.id,
+                    options: message.options,
+                    data: { messageId: message.id },
+                });
+                const pushOptions = { urgency: 'high', TTL: 86400 };
+                const invalidEndpoints = [];
+
+                await Promise.all(
+                    subscriptions.map(async (subscription) => {
+                        try {
+                            await webpush.sendNotification(subscription, pushPayload, pushOptions);
+                        } catch (error) {
+                            if (error.statusCode === 404 || error.statusCode === 410) {
+                                invalidEndpoints.push(subscription.endpoint);
+                            } else {
+                                console.error('Push error:', error.statusCode, error.message);
+                            }
+                        }
+                    })
+                );
+
+                if (invalidEndpoints.length > 0) {
+                    const cleaned = subscriptions.filter(sub => !invalidEndpoints.includes(sub.endpoint));
+                    saveSubscriptions(cleaned);
+                }
+            }
+
+            return sendJson(res, 201, message);
+        }
+
+        // List messages
+        if (pathname === '/api/messages' && req.method === 'GET') {
+            const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+            const offset = parseInt(url.searchParams.get('offset') || '0', 10);
+            const statusFilter = url.searchParams.get('status') || '';
+            const typeFilter = url.searchParams.get('type') || '';
+
+            let messages = getMessages();
+            if (statusFilter) messages = messages.filter(m => m.status === statusFilter);
+            if (typeFilter) messages = messages.filter(m => m.type === typeFilter);
+
+            // Newest first
+            messages.reverse();
+            const total = messages.length;
+            messages = messages.slice(offset, offset + limit);
+
+            return sendJson(res, 200, { messages, total, limit, offset });
+        }
+
+        // Get specific message
+        const messageMatch = pathname.match(/^\/api\/messages\/([^/]+)$/);
+        if (messageMatch && req.method === 'GET') {
+            const message = getMessageById(messageMatch[1]);
+            if (!message) return sendJson(res, 404, { error: 'Message not found' });
+            return sendJson(res, 200, message);
+        }
+
+        // Respond to a message
+        const respondMatch = pathname.match(/^\/api\/messages\/([^/]+)\/respond$/);
+        if (respondMatch && req.method === 'POST') {
+            const payload = await parseBody(req);
+            if (!payload.value) {
+                return sendJson(res, 400, { error: 'value is required' });
+            }
+            const result = respondToMessage(respondMatch[1], payload.value, payload.source || 'app');
+            if (result.error === 'not_found') return sendJson(res, 404, { error: 'Message not found' });
+            if (result.error === 'already_responded') return sendJson(res, 409, { error: 'Already responded', message: result.message });
+            return sendJson(res, 200, result.message);
+        }
+
+        // SSE wait for response (CLI blocks here)
+        const waitMatch = pathname.match(/^\/api\/messages\/([^/]+)\/wait$/);
+        if (waitMatch && req.method === 'GET') {
+            const messageId = waitMatch[1];
+            const message = getMessageById(messageId);
+            if (!message) return sendJson(res, 404, { error: 'Message not found' });
+
+            // If already responded, return immediately
+            if (message.status === 'responded') {
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'Access-Control-Allow-Origin': '*',
+                });
+                res.write(`event: response\ndata: ${JSON.stringify(message.response)}\n\n`);
+                res.end();
+                return;
+            }
+
+            // Set up SSE stream
+            res.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'Access-Control-Allow-Origin': '*',
+            });
+            res.write(`event: connected\ndata: ${JSON.stringify({ messageId })}\n\n`);
+
+            // Register waiter
+            if (!sseWaiters.has(messageId)) {
+                sseWaiters.set(messageId, new Set());
+            }
+            sseWaiters.get(messageId).add(res);
+
+            // Heartbeat every 30s
+            const heartbeat = setInterval(() => {
+                try { res.write(`:heartbeat\n\n`); } catch { clearInterval(heartbeat); }
+            }, 30000);
+
+            // Clean up on disconnect
+            req.on('close', () => {
+                clearInterval(heartbeat);
+                const waiters = sseWaiters.get(messageId);
+                if (waiters) {
+                    waiters.delete(res);
+                    if (waiters.size === 0) sseWaiters.delete(messageId);
+                }
+            });
+            return;
         }
 
         // Health check
@@ -329,6 +569,11 @@ server.listen(PORT, HOST, () => {
     console.log(`  POST ${protocol}://${displayHost}:${PORT}/api/subscribe`);
     console.log(`  POST ${protocol}://${displayHost}:${PORT}/api/unsubscribe`);
     console.log(`  POST ${protocol}://${displayHost}:${PORT}/api/notify`);
+    console.log(`  POST ${protocol}://${displayHost}:${PORT}/api/messages`);
+    console.log(`  GET  ${protocol}://${displayHost}:${PORT}/api/messages`);
+    console.log(`  GET  ${protocol}://${displayHost}:${PORT}/api/messages/:id`);
+    console.log(`  POST ${protocol}://${displayHost}:${PORT}/api/messages/:id/respond`);
+    console.log(`  GET  ${protocol}://${displayHost}:${PORT}/api/messages/:id/wait (SSE)`);
     console.log(`  GET  ${protocol}://${displayHost}:${PORT}/api/health`);
     console.log(`\nExample notification:`);
     console.log(`  curl ${useHttps ? '-k ' : ''}-X POST ${protocol}://${displayHost}:${PORT}/api/notify \\`);

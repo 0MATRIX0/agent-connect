@@ -20,6 +20,14 @@ After finishing a task, needing input, or completing an action, notify me using:
 agent-connect notify "description" --type TYPE
 \`\`\`
 
+When you need input or a decision from the user, ASK instead of just notifying:
+\`\`\`bash
+RESPONSE=$(agent-connect ask "question" --options "opt1,opt2,opt3")
+\`\`\`
+The \`ask\` command blocks until the user responds and returns their answer to stdout.
+Use \`--timeout SECONDS\` to set a custom timeout (default: 300s).
+Use \`--no-custom\` to restrict responses to the provided options only.
+
 Notification types:
 - \`completed\` — Task/request finished successfully (default)
 - \`planning_complete\` — Finished planning, ready for review
@@ -35,6 +43,8 @@ agent-connect notify "Ready to implement the new API endpoint" --type planning_c
 agent-connect notify "Should I delete the legacy migration files?" --type approval_needed
 agent-connect notify "npm install completed successfully" --type command_execution
 agent-connect notify "Build failed: missing dependency" --type error
+RESPONSE=$(agent-connect ask "Delete legacy files?" --options "Yes,No,Skip")
+RESPONSE=$(agent-connect ask "Which database?" --options "PostgreSQL,SQLite" --timeout 60)
 \`\`\`
 Always include a descriptive body explaining what was done or what is needed.
 ${END_MARKER}
