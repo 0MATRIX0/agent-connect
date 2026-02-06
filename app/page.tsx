@@ -1,8 +1,43 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 type SubscriptionStatus = 'loading' | 'unsupported' | 'denied' | 'subscribed' | 'unsubscribed';
+
+interface StoredNotification {
+  id: string;
+  title: string;
+  body: string;
+  type: string;
+  icon: string;
+  data: Record<string, unknown>;
+  timestamp: string;
+}
+
+const typeColors: Record<string, string> = {
+  completed: 'bg-green-500',
+  planning_complete: 'bg-blue-400',
+  approval_needed: 'bg-orange-500',
+  input_needed: 'bg-yellow-500',
+  command_execution: 'bg-purple-400',
+  error: 'bg-red-500',
+};
+
+function relativeTime(timestamp: string): string {
+  const now = Date.now();
+  const then = new Date(timestamp).getTime();
+  const diff = now - then;
+
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(timestamp).toLocaleDateString();
+}
 
 export default function Home() {
   const [status, setStatus] = useState<SubscriptionStatus>('loading');
@@ -12,6 +47,22 @@ export default function Home() {
   const [vapidPublicKey, setVapidPublicKey] = useState<string>('');
   const [apiBaseUrl, setApiBaseUrl] = useState<string>('');
   const [configLoaded, setConfigLoaded] = useState(false);
+  const [notificationHistory, setNotificationHistory] = useState<StoredNotification[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+
+  const fetchNotifications = useCallback(async () => {
+    try {
+      const res = await fetch('/api/notifications');
+      if (res.ok) {
+        const data = await res.json();
+        setNotificationHistory(Array.isArray(data) ? data : []);
+      }
+    } catch {
+      // API may be unreachable
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     async function loadConfig() {
@@ -27,7 +78,8 @@ export default function Home() {
       }
     }
     loadConfig();
-  }, []);
+    fetchNotifications();
+  }, [fetchNotifications]);
 
   useEffect(() => {
     if (!configLoaded) return;
@@ -43,16 +95,13 @@ export default function Home() {
     }
 
     try {
-      // Check if a service worker is already registered
       const registrations = await navigator.serviceWorker.getRegistrations();
 
       if (registrations.length === 0) {
-        // No service worker registered yet - user hasn't subscribed before
         setStatus('unsubscribed');
         return;
       }
 
-      // Service worker exists, wait for it to be ready and check subscription
       const registration = await navigator.serviceWorker.ready;
       const existingSubscription = await registration.pushManager.getSubscription();
 
@@ -70,7 +119,6 @@ export default function Home() {
 
   async function subscribe() {
     try {
-      // Step 0: Clean up stale service workers and caches
       setMessage('Preparing service worker...');
       const existingRegs = await navigator.serviceWorker.getRegistrations();
       for (const reg of existingRegs) {
@@ -79,7 +127,6 @@ export default function Home() {
       const cacheNames = await caches.keys();
       await Promise.all(cacheNames.map(name => caches.delete(name)));
 
-      // Step 1: Register service worker fresh (bypass HTTP cache)
       setMessage('Registering service worker...');
       const registration = await withTimeout(
         navigator.serviceWorker.register('/push-sw.js', { updateViaCache: 'none' }),
@@ -94,7 +141,6 @@ export default function Home() {
         'Service worker failed to activate (timed out)'
       );
 
-      // Step 2: Request notification permission
       setMessage('Requesting notification permission...');
       const permission = await withTimeout(
         Notification.requestPermission(),
@@ -107,7 +153,6 @@ export default function Home() {
         return;
       }
 
-      // Step 3: Validate VAPID key and create push subscription
       if (!vapidPublicKey || vapidPublicKey.trim().length === 0) {
         throw new Error('VAPID public key is missing — check server config');
       }
@@ -122,7 +167,6 @@ export default function Home() {
         'Push subscription timed out — VAPID key may be invalid'
       );
 
-      // Step 4: Save subscription to server
       setMessage('Saving subscription to server...');
       const baseUrl = apiBaseUrl || '';
       const controller = new AbortController();
@@ -158,10 +202,8 @@ export default function Home() {
       setMessage('Unsubscribing...');
 
       if (subscription) {
-        // Unsubscribe from push manager
         await subscription.unsubscribe();
 
-        // Remove from server
         const baseUrl = apiBaseUrl || '';
         await fetch(`${baseUrl}/api/unsubscribe`, {
           method: 'POST',
@@ -198,12 +240,35 @@ export default function Home() {
 
       if (response.ok) {
         setMessage(`Test sent! ${data.message}`);
+        fetchNotifications();
       } else {
         setMessage(`Error: ${data.error}`);
       }
     } catch (error) {
       console.error('Test notification error:', error);
       setMessage(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async function deleteNotification(id: string) {
+    try {
+      const res = await fetch(`/api/notifications/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setNotificationHistory(prev => prev.filter(n => n.id !== id));
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  async function clearAllNotifications() {
+    try {
+      const res = await fetch('/api/notifications', { method: 'DELETE' });
+      if (res.ok) {
+        setNotificationHistory([]);
+      }
+    } catch {
+      // ignore
     }
   }
 
@@ -282,6 +347,58 @@ export default function Home() {
           <p className="mt-4 text-sm text-gray-300 bg-gray-700 rounded px-3 py-2">
             {message}
           </p>
+        )}
+      </div>
+
+      {/* Notification History */}
+      <div className="bg-gray-800 rounded-lg p-6 mb-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold">Notification History</h2>
+          {notificationHistory.length > 0 && (
+            <button
+              onClick={clearAllNotifications}
+              className="text-sm text-gray-400 hover:text-red-400 transition-colors"
+            >
+              Clear All
+            </button>
+          )}
+        </div>
+
+        {historyLoading ? (
+          <p className="text-gray-500 text-sm">Loading...</p>
+        ) : notificationHistory.length === 0 ? (
+          <p className="text-gray-500 text-sm">No notifications yet</p>
+        ) : (
+          <div className="space-y-2 max-h-96 overflow-y-auto">
+            {notificationHistory.map((n) => (
+              <div
+                key={n.id}
+                className="flex items-start gap-3 bg-gray-900 rounded-lg px-4 py-3 group"
+              >
+                <span
+                  className={`w-2.5 h-2.5 rounded-full mt-1.5 flex-shrink-0 ${
+                    typeColors[n.type] || 'bg-gray-500'
+                  }`}
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="font-medium text-sm truncate">{n.title}</span>
+                    <span className="text-xs text-gray-500 flex-shrink-0">
+                      {relativeTime(n.timestamp)}
+                    </span>
+                  </div>
+                  <p className="text-sm text-gray-400 mt-0.5 break-words">{n.body}</p>
+                </div>
+                <button
+                  onClick={() => deleteNotification(n.id)}
+                  className="text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5"
+                  title="Delete"
+                >
+                  &times;
+                </button>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 
@@ -389,8 +506,6 @@ curl -X POST ${apiUrl} \\
 }
 
 // Helper: wait for a service worker registration to reach the 'activated' state.
-// Tracks the installing/waiting worker AND listens for updatefound in case the
-// browser replaces the worker mid-install (e.g. with skipWaiting enabled).
 function waitForActivation(registration: ServiceWorkerRegistration): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     if (registration.active) {
@@ -424,7 +539,6 @@ function waitForActivation(registration: ServiceWorkerRegistration): Promise<voi
       trackWorker(sw);
     }
 
-    // Catch new installations triggered by the browser
     registration.addEventListener('updatefound', () => {
       if (registration.installing) {
         trackWorker(registration.installing);

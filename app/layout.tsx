@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import Nav from './components/Nav';
 
 export const metadata: Metadata = {
   title: 'Agent Connect',
@@ -30,6 +31,7 @@ export default function RootLayout({
         <link rel="apple-touch-icon" href="/icon-192.png" />
       </head>
       <body className="bg-gray-900 text-gray-100 min-h-screen">
+        <Nav />
         {children}
       </body>
     </html>
