@@ -125,7 +125,7 @@ async function runSetup() {
   const webpush = require('web-push');
   const vapidKeys = webpush.generateVAPIDKeys();
 
-  const vapidSubject = 'mailto:agent-connect@localhost';
+  const vapidSubject = `mailto:agent-connect@${hostname}`;
   print('  VAPID keys generated.');
 
   // Step 7: Configure ports
