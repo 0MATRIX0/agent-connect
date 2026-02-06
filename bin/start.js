@@ -1,6 +1,6 @@
 const { fork, execSync } = require('child_process');
 const path = require('path');
-const { loadConfig, getDataDir, isSetupComplete } = require('./config');
+const { loadConfig, saveConfig, getDataDir, isSetupComplete, generateEnvLocal } = require('./config');
 
 const PACKAGE_ROOT = path.resolve(__dirname, '..');
 
@@ -93,7 +93,29 @@ function startServers() {
   }
 
   const config = loadConfig();
+
+  // Auto-detect Tailscale hostname changes
+  try {
+    const statusJson = execSync('tailscale status --json', { stdio: 'pipe', timeout: 5000 }).toString();
+    const status = JSON.parse(statusJson);
+    const dnsName = status.Self?.DNSName;
+    if (dnsName) {
+      const currentHostname = dnsName.replace(/\.$/, '');
+      if (currentHostname && currentHostname !== config.hostname) {
+        console.log(`  Tailscale hostname changed: ${config.hostname} -> ${currentHostname}`);
+        config.hostname = currentHostname;
+        config.apiPort = config.apiPort || 3109;
+        saveConfig(config);
+      }
+    }
+  } catch {
+    // Tailscale not available yet, will be handled by ensureTailscale
+  }
+
   setEnvFromConfig(config);
+
+  // Keep .env.local in sync with config on every startup
+  generateEnvLocal(PACKAGE_ROOT);
 
   const hostname = config.hostname;
   const apiPort = config.apiPort || 3109;

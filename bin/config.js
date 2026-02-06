@@ -46,6 +46,31 @@ function isSetupComplete() {
   return !!(config.vapidPublicKey && config.vapidPrivateKey && config.hostname);
 }
 
+function generateEnvLocal(packageRoot) {
+  const config = loadConfig();
+  if (!config) return false;
+
+  const hostname = config.hostname;
+  const apiPort = config.apiPort || 3109;
+
+  const lines = [
+    `NEXT_PUBLIC_VAPID_PUBLIC_KEY=${config.vapidPublicKey}`,
+    `VAPID_PRIVATE_KEY=${config.vapidPrivateKey}`,
+    `VAPID_SUBJECT=${config.vapidSubject || 'mailto:agent-connect@localhost'}`,
+    '',
+    `APP_HOSTNAME=${hostname}`,
+    '',
+    `NEXT_PUBLIC_API_URL=https://${hostname}:${apiPort}`,
+    `API_PORT=${apiPort}`,
+    `API_HOST=127.0.0.1`,
+    '',
+  ];
+
+  const envPath = path.join(packageRoot, '.env.local');
+  fs.writeFileSync(envPath, lines.join('\n'));
+  return true;
+}
+
 module.exports = {
   getConfigDir,
   getDataDir,
@@ -54,6 +79,7 @@ module.exports = {
   loadConfig,
   saveConfig,
   isSetupComplete,
+  generateEnvLocal,
   CONFIG_DIR,
   CONFIG_FILE,
   DATA_DIR,

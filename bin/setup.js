@@ -1,7 +1,7 @@
 const { execSync, spawnSync } = require('child_process');
 const readline = require('readline');
 const path = require('path');
-const { saveConfig, loadConfig, ensureDataDir, getConfigDir } = require('./config');
+const { saveConfig, loadConfig, ensureDataDir, getConfigDir, generateEnvLocal } = require('./config');
 
 function ask(rl, question) {
   return new Promise(resolve => {
@@ -181,6 +181,11 @@ async function runSetup() {
 
   saveConfig(config);
   ensureDataDir();
+
+  // Auto-generate .env.local from config
+  const packageRoot = path.resolve(__dirname, '..');
+  generateEnvLocal(packageRoot);
+  print(`  Generated .env.local`);
 
   // Install Claude Code notification hook
   const { installClaudeHook } = require('./claude-hook');
