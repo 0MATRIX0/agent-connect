@@ -1,6 +1,6 @@
 {
-  "name": "Agent Notifier",
-  "short_name": "AgentNotify",
+  "name": "Agent Connect",
+  "short_name": "AgentConnect",
   "description": "Push notifications for AI coding agents",
   "start_url": "/",
   "display": "standalone",
