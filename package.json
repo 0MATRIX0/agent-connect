@@ -21,7 +21,7 @@
     "url": "https://github.com/0MATRIX0/agent-connect/issues"
   },
   "bin": {
-    "agent-connect": "./bin/agent-connect.js"
+    "agent-connect": "bin/agent-connect.js"
   },
   "files": [
     "bin/",
