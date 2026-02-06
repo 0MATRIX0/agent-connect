@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const net = require('net');
 
 const CONFIG_DIR = path.join(os.homedir(), '.agent-connect');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
@@ -71,6 +72,29 @@ function generateEnvLocal(packageRoot) {
   return true;
 }
 
+function isPortAvailable(port, host = '127.0.0.1') {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', (err) => {
+      resolve(err.code !== 'EADDRINUSE');
+    });
+    server.once('listening', () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, host);
+  });
+}
+
+async function findAvailablePort(preferredPort, host = '127.0.0.1', maxAttempts = 20) {
+  for (let i = 0; i < maxAttempts; i++) {
+    const port = preferredPort + i;
+    if (await isPortAvailable(port, host)) {
+      return { port, changed: port !== preferredPort };
+    }
+  }
+  throw new Error(`No available port found in range ${preferredPort}-${preferredPort + maxAttempts - 1}`);
+}
+
 module.exports = {
   getConfigDir,
   getDataDir,
@@ -80,6 +104,8 @@ module.exports = {
   saveConfig,
   isSetupComplete,
   generateEnvLocal,
+  isPortAvailable,
+  findAvailablePort,
   CONFIG_DIR,
   CONFIG_FILE,
   DATA_DIR,

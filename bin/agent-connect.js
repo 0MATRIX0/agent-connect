@@ -52,7 +52,7 @@ async function main() {
 
   if (command === 'start') {
     const { startServers } = require('./start');
-    startServers();
+    await startServers();
     return;
   }
 
@@ -87,7 +87,7 @@ async function main() {
     }
 
     const { startServers } = require('./start');
-    startServers();
+    await startServers();
     return;
   }
 
