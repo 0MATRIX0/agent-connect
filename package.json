@@ -11,6 +11,15 @@
     "developer-tools"
   ],
   "license": "MIT",
+  "author": "0MATRIX0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0MATRIX0/agent-connect.git"
+  },
+  "homepage": "https://github.com/0MATRIX0/agent-connect#readme",
+  "bugs": {
+    "url": "https://github.com/0MATRIX0/agent-connect/issues"
+  },
   "bin": {
     "agent-connect": "./bin/agent-connect.js"
   },

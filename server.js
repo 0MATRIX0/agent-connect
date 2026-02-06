@@ -14,12 +14,41 @@ const PORT = process.env.API_PORT || 3109;
 const DATA_DIR = process.env.AGENT_CONNECT_DATA_DIR || path.join(os.homedir(), '.agent-connect', 'data');
 const SUBSCRIPTIONS_FILE = path.join(DATA_DIR, 'subscriptions.json');
 
-// Load config from ~/.agent-connect/config.json, then .env.local as fallback
+// Load config from .env.local first (source of truth for VAPID keys used by browser),
+// then ~/.agent-connect/config.json as fallback for non-env settings
 function loadConfig() {
-  // Try ~/.agent-connect/config.json first
+  let hasEnvLocal = false;
+
+  // Try .env.local first — this is the source of truth for VAPID keys
+  // since the Next.js frontend serves these to the browser
+  try {
+    const envPath = path.join(__dirname, '.env.local');
+    const envContent = fs.readFileSync(envPath, 'utf-8');
+    envContent.split('\n').forEach(line => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) return;
+      const [key, ...valueParts] = trimmed.split('=');
+      if (key && valueParts.length > 0) {
+        process.env[key.trim()] = process.env[key.trim()] || valueParts.join('=').trim();
+      }
+    });
+    hasEnvLocal = true;
+  } catch {
+    // .env.local not found, will try config.json
+  }
+
+  // Load ~/.agent-connect/config.json as fallback (fills in any gaps)
   try {
     const configPath = path.join(os.homedir(), '.agent-connect', 'config.json');
     const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+
+    // Warn if VAPID keys differ between .env.local and config.json
+    const envPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || process.env.VAPID_PUBLIC_KEY;
+    if (hasEnvLocal && config.vapidPublicKey && envPublicKey && config.vapidPublicKey !== envPublicKey) {
+      console.warn('Warning: VAPID public key in config.json differs from .env.local');
+      console.warn('  .env.local key will be used (source of truth for browser subscriptions)');
+    }
+
     if (config.vapidPublicKey) process.env.VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || config.vapidPublicKey;
     if (config.vapidPublicKey) process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || config.vapidPublicKey;
     if (config.vapidPrivateKey) process.env.VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || config.vapidPrivateKey;
@@ -28,23 +57,13 @@ function loadConfig() {
     if (config.apiPort) process.env.API_PORT = process.env.API_PORT || String(config.apiPort);
     return true;
   } catch {
-    // Fall back to .env.local
+    if (!hasEnvLocal) {
+      console.warn('Warning: No config found. Run: agent-connect setup');
+      return false;
+    }
   }
 
-  try {
-    const envPath = path.join(__dirname, '.env.local');
-    const envContent = fs.readFileSync(envPath, 'utf-8');
-    envContent.split('\n').forEach(line => {
-      const [key, ...valueParts] = line.split('=');
-      if (key && valueParts.length > 0) {
-        process.env[key.trim()] = valueParts.join('=').trim();
-      }
-    });
-    return true;
-  } catch {
-    console.warn('Warning: No config found. Run: agent-connect setup');
-    return false;
-  }
+  return hasEnvLocal;
 }
 
 loadConfig();
@@ -56,6 +75,7 @@ const subject = process.env.VAPID_SUBJECT || 'mailto:admin@example.com';
 
 if (publicKey && privateKey) {
   webpush.setVapidDetails(subject, publicKey, privateKey);
+  console.log(`VAPID public key: ${publicKey.substring(0, 20)}...`);
 } else {
   console.error('VAPID keys not configured! Run: npm run generate-vapid-keys');
 }
@@ -202,16 +222,26 @@ async function handleRequest(req, res) {
         data: payload.data || {},
       });
 
+      const pushOptions = {
+        urgency: 'high',
+        TTL: 60,
+      };
+
       await Promise.all(
         subscriptions.map(async (subscription) => {
           try {
-            await webpush.sendNotification(subscription, notificationPayload);
+            await webpush.sendNotification(subscription, notificationPayload, pushOptions);
             sentCount++;
           } catch (error) {
             if (error.statusCode === 404 || error.statusCode === 410) {
               invalidEndpoints.push(subscription.endpoint);
             } else {
-              console.error('Failed to send notification:', error.message);
+              console.error('Failed to send notification:', {
+                statusCode: error.statusCode,
+                body: error.body,
+                endpoint: subscription.endpoint,
+                message: error.message,
+              });
             }
           }
         })

@@ -354,23 +354,14 @@ export default function Home() {
   );
 }
 
-// Helper: wait for a service worker registration to reach the 'activated' state
+// Helper: wait for a service worker to be active for this scope.
+// Uses navigator.serviceWorker.ready which handles skipWaiting race conditions
+// (where the tracked SW goes redundant before registration.active is updated).
 function waitForActivation(registration: ServiceWorkerRegistration): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    if (registration.active) {
-      resolve();
-      return;
-    }
-    const sw = registration.installing || registration.waiting;
-    if (!sw) {
-      reject(new Error('No service worker found after registration'));
-      return;
-    }
-    sw.addEventListener('statechange', () => {
-      if (sw.state === 'activated') resolve();
-      else if (sw.state === 'redundant') reject(new Error('Service worker became redundant'));
-    });
-  });
+  if (registration.active) {
+    return Promise.resolve();
+  }
+  return navigator.serviceWorker.ready.then(() => {});
 }
 
 // Helper: reject if a promise doesn't resolve within `ms` milliseconds

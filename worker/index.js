@@ -3,52 +3,61 @@
 
 // Push event - handle incoming push notifications
 self.addEventListener('push', (event) => {
-  console.log('Push received:', event);
-
-  let data = {
-    title: 'Agent Notifier',
-    body: 'New notification',
-    icon: '/icon-192.png',
-    badge: '/icon-192.png',
-    type: 'completed',
-  };
-
-  if (event.data) {
+  const promise = (async () => {
     try {
-      data = { ...data, ...event.data.json() };
-    } catch (e) {
-      data.body = event.data.text();
+      console.log('Push received:', event);
+
+      let data = {
+        title: 'Agent Connect',
+        body: 'New notification',
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        type: 'completed',
+      };
+
+      if (event.data) {
+        try {
+          data = { ...data, ...event.data.json() };
+        } catch (e) {
+          data.body = event.data.text();
+        }
+      }
+
+      // Choose tag color/icon based on type
+      const typeConfig = {
+        completed: { tag: 'completed', vibrate: [100, 50, 100] },
+        input_needed: { tag: 'input_needed', vibrate: [200, 100, 200, 100, 200] },
+        error: { tag: 'error', vibrate: [500, 200, 500] },
+      };
+
+      const config = typeConfig[data.type] || typeConfig.completed;
+
+      const options = {
+        body: data.body,
+        icon: data.icon,
+        badge: data.badge,
+        tag: config.tag,
+        vibrate: config.vibrate,
+        data: {
+          url: '/',
+          type: data.type,
+          ...data.data,
+        },
+        requireInteraction: data.type === 'input_needed',
+      };
+
+      await self.registration.showNotification(data.title, options);
+    } catch (err) {
+      console.error('Push handler error:', err);
+      // Show fallback notification so the error is visible on device
+      await self.registration.showNotification('Push Error', {
+        body: err.message || String(err),
+        tag: 'push-error',
+      });
     }
-  }
+  })();
 
-  // Choose tag color/icon based on type
-  const typeConfig = {
-    completed: { tag: 'completed', vibrate: [100, 50, 100] },
-    input_needed: { tag: 'input_needed', vibrate: [200, 100, 200, 100, 200] },
-    error: { tag: 'error', vibrate: [500, 200, 500] },
-  };
-
-  const config = typeConfig[data.type] || typeConfig.completed;
-
-  const options = {
-    body: data.body,
-    icon: data.icon,
-    badge: data.badge,
-    tag: config.tag,
-    vibrate: config.vibrate,
-    data: {
-      url: '/',
-      type: data.type,
-      ...data.data,
-    },
-    actions: [
-      { action: 'open', title: 'Open App' },
-      { action: 'dismiss', title: 'Dismiss' },
-    ],
-    requireInteraction: data.type === 'input_needed',
-  };
-
-  event.waitUntil(self.registration.showNotification(data.title, options));
+  event.waitUntil(promise);
 });
 
 // Notification click event - handle user interaction
