@@ -66,7 +66,7 @@ export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
   const title = searchParams.get('title') || 'Agent Notifier';
   const body = searchParams.get('body') || 'Test notification';
-  const type = searchParams.get('type') as 'completed' | 'input_needed' | 'error' | undefined;
+  const type = searchParams.get('type') as NotificationPayload['type'];
 
   // Create a mock request and call POST handler
   const mockRequest = new NextRequest(request.url, {
