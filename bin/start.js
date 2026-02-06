@@ -29,17 +29,42 @@ function ensureTailscale(config) {
 
   // Set up tailscale serve proxies
   console.log('  Tailscale Serve: configuring proxies...');
+
+  // Check if proxies are already configured
+  let serveStatus = '';
   try {
-    execSync(`tailscale serve --bg --https 443 http://localhost:${frontendPort}`, { stdio: 'pipe' });
-    console.log(`  Tailscale Serve: https://${hostname} -> localhost:${frontendPort}`);
-  } catch (err) {
-    console.warn(`  Tailscale Serve: frontend proxy may already be active (${err.message})`);
+    serveStatus = execSync('tailscale serve status', { stdio: 'pipe', timeout: 5000 }).toString();
+  } catch {
+    // No serve config yet, will configure below
   }
-  try {
-    execSync(`tailscale serve --bg --https ${apiPort} http://localhost:${apiPort}`, { stdio: 'pipe' });
-    console.log(`  Tailscale Serve: https://${hostname}:${apiPort} -> localhost:${apiPort}`);
-  } catch (err) {
-    console.warn(`  Tailscale Serve: API proxy may already be active (${err.message})`);
+
+  const proxyConfigs = [
+    { name: 'Frontend', https: '443', target: frontendPort, url: `https://${hostname}` },
+    { name: 'API',      https: String(apiPort), target: apiPort, url: `https://${hostname}:${apiPort}` },
+  ];
+
+  for (const proxy of proxyConfigs) {
+    // Skip if this proxy is already configured (status output contains "localhost:<port>")
+    if (serveStatus.includes(`localhost:${proxy.target}`)) {
+      console.log(`    ${proxy.name}: already configured (${proxy.url} -> localhost:${proxy.target})`);
+      continue;
+    }
+
+    const cmd = `tailscale serve --bg --https ${proxy.https} http://localhost:${proxy.target}`;
+    console.log(`    ${proxy.name}: ${cmd}`);
+    try {
+      const start = Date.now();
+      execSync(cmd, { stdio: 'pipe', timeout: 30000 });
+      console.log(`    ${proxy.name}: ${proxy.url} -> localhost:${proxy.target} (${Date.now() - start}ms)`);
+    } catch (err) {
+      if (err.code === 'ETIMEDOUT') {
+        console.error(`    ${proxy.name}: timed out after 30s`);
+      } else {
+        const stderr = err.stderr ? err.stderr.toString().trim() : '';
+        const detail = stderr || err.message;
+        console.warn(`    ${proxy.name}: ${detail}`);
+      }
+    }
   }
 }
 
