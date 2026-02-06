@@ -14,7 +14,8 @@ const PORT = process.env.PORT || 3110;
 const next = require('next');
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = process.env.LISTEN_HOST || '0.0.0.0';
-const app = next({ dev, hostname, port: PORT });
+const appDir = process.env.NEXT_APP_DIR || __dirname;
+const app = next({ dev, hostname, port: PORT, dir: appDir });
 const handle = app.getRequestHandler();
 
 // Determine if we should use HTTPS directly or let Tailscale Serve handle TLS

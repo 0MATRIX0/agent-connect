@@ -1,12 +1,18 @@
-// Custom Service Worker code for Agent Notifier PWA
-// This file is merged with next-pwa generated service worker
+// Minimal push-only service worker for Agent Connect
+// No workbox, no precaching — just push notification handling
+
+self.addEventListener('install', () => {
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
 
 // Push event - handle incoming push notifications
 self.addEventListener('push', (event) => {
   const promise = (async () => {
     try {
-      console.log('Push received:', event);
-
       let data = {
         title: 'Agent Connect',
         body: 'New notification',
@@ -55,7 +61,6 @@ self.addEventListener('push', (event) => {
       await self.registration.showNotification(data.title, options);
     } catch (err) {
       console.error('Push handler error:', err);
-      // Show fallback notification so the error is visible on device
       await self.registration.showNotification('Push Error', {
         body: err.message || String(err),
         tag: 'push-error',
@@ -68,24 +73,19 @@ self.addEventListener('push', (event) => {
 
 // Notification click event - handle user interaction
 self.addEventListener('notificationclick', (event) => {
-  console.log('Notification clicked:', event);
-
   event.notification.close();
 
   if (event.action === 'dismiss') {
     return;
   }
 
-  // Focus or open the app
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
-      // If a window is already open, focus it
       for (const client of clientList) {
         if (client.url.includes(self.location.origin) && 'focus' in client) {
           return client.focus();
         }
       }
-      // Otherwise open a new window
       if (clients.openWindow) {
         return clients.openWindow('/');
       }
@@ -95,5 +95,5 @@ self.addEventListener('notificationclick', (event) => {
 
 // Notification close event
 self.addEventListener('notificationclose', (event) => {
-  console.log('Notification closed:', event);
+  // no-op, can be used for analytics
 });

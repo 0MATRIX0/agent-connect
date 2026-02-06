@@ -9,16 +9,32 @@ export default function Home() {
   const [subscription, setSubscription] = useState<PushSubscription | null>(null);
   const [message, setMessage] = useState<string>('');
   const [apiUrl, setApiUrl] = useState<string>('');
-
-  const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || '';
-  const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || '';
+  const [vapidPublicKey, setVapidPublicKey] = useState<string>('');
+  const [apiBaseUrl, setApiBaseUrl] = useState<string>('');
+  const [configLoaded, setConfigLoaded] = useState(false);
 
   useEffect(() => {
-    // Use configured API URL or fall back to same-origin
+    async function loadConfig() {
+      try {
+        const res = await fetch('/api/config');
+        const config = await res.json();
+        setVapidPublicKey(config.vapidPublicKey || '');
+        setApiBaseUrl(config.apiUrl || '');
+        setConfigLoaded(true);
+      } catch (err) {
+        console.error('Failed to load config:', err);
+        setConfigLoaded(true);
+      }
+    }
+    loadConfig();
+  }, []);
+
+  useEffect(() => {
+    if (!configLoaded) return;
     const baseUrl = apiBaseUrl || window.location.origin;
     setApiUrl(`${baseUrl}/api/notify`);
     checkSubscription();
-  }, [apiBaseUrl]);
+  }, [configLoaded, apiBaseUrl]);
 
   async function checkSubscription() {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
@@ -54,33 +70,74 @@ export default function Home() {
 
   async function subscribe() {
     try {
-      setMessage('Subscribing...');
+      // Step 0: Clean up stale service workers and caches
+      setMessage('Preparing service worker...');
+      const existingRegs = await navigator.serviceWorker.getRegistrations();
+      for (const reg of existingRegs) {
+        await reg.unregister();
+      }
+      const cacheNames = await caches.keys();
+      await Promise.all(cacheNames.map(name => caches.delete(name)));
 
-      // Register service worker first
-      const registration = await navigator.serviceWorker.register('/sw.js');
-      await navigator.serviceWorker.ready;
+      // Step 1: Register service worker fresh (bypass HTTP cache)
+      setMessage('Registering service worker...');
+      const registration = await withTimeout(
+        navigator.serviceWorker.register('/push-sw.js', { updateViaCache: 'none' }),
+        10000,
+        'Service worker registration timed out'
+      );
 
-      // Request permission
-      const permission = await Notification.requestPermission();
+      setMessage('Waiting for service worker to activate...');
+      await withTimeout(
+        waitForActivation(registration),
+        30000,
+        'Service worker failed to activate (timed out)'
+      );
+
+      // Step 2: Request notification permission
+      setMessage('Requesting notification permission...');
+      const permission = await withTimeout(
+        Notification.requestPermission(),
+        30000,
+        'Permission request timed out'
+      );
       if (permission !== 'granted') {
         setStatus('denied');
         setMessage('Notification permission denied');
         return;
       }
 
-      // Subscribe to push
-      const newSubscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
-      });
+      // Step 3: Validate VAPID key and create push subscription
+      if (!vapidPublicKey || vapidPublicKey.trim().length === 0) {
+        throw new Error('VAPID public key is missing — check server config');
+      }
 
-      // Send subscription to server
+      setMessage('Creating push subscription...');
+      const newSubscription = await withTimeout(
+        registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+        }),
+        15000,
+        'Push subscription timed out — VAPID key may be invalid'
+      );
+
+      // Step 4: Save subscription to server
+      setMessage('Saving subscription to server...');
       const baseUrl = apiBaseUrl || '';
-      const response = await fetch(`${baseUrl}/api/subscribe`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newSubscription.toJSON()),
-      });
+      const controller = new AbortController();
+      const fetchTimeout = setTimeout(() => controller.abort(), 10000);
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/api/subscribe`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newSubscription.toJSON()),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(fetchTimeout);
+      }
 
       if (response.ok) {
         setSubscription(newSubscription);
@@ -91,7 +148,8 @@ export default function Home() {
       }
     } catch (error) {
       console.error('Subscribe error:', error);
-      setMessage(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      setMessage(`Error: ${msg.replace('The operation was aborted', 'Server request timed out')}`);
     }
   }
 
@@ -130,7 +188,7 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title: 'Agent Notifier Test',
+          title: 'Agent Connect Test',
           body: 'This is a test notification!',
           type: 'completed',
         }),
@@ -156,7 +214,7 @@ export default function Home() {
 
   return (
     <main className="container mx-auto px-4 py-8 max-w-2xl">
-      <h1 className="text-3xl font-bold mb-2">Agent Notifier</h1>
+      <h1 className="text-3xl font-bold mb-2">Agent Connect</h1>
       <p className="text-gray-400 mb-8">
         Push notifications for AI coding agents like Claude Code
       </p>
@@ -303,6 +361,62 @@ export default function Home() {
       </div>
     </main>
   );
+}
+
+// Helper: wait for a service worker registration to reach the 'activated' state.
+// Tracks the installing/waiting worker AND listens for updatefound in case the
+// browser replaces the worker mid-install (e.g. with skipWaiting enabled).
+function waitForActivation(registration: ServiceWorkerRegistration): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (registration.active) {
+      resolve();
+      return;
+    }
+
+    let settled = false;
+    const done = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      err ? reject(err) : resolve();
+    };
+
+    const trackWorker = (sw: ServiceWorker) => {
+      sw.addEventListener('statechange', () => {
+        if (sw.state === 'activated' || registration.active) {
+          done();
+        } else if (sw.state === 'redundant') {
+          if (registration.active) {
+            done();
+          } else {
+            done(new Error('Service worker install failed (went redundant)'));
+          }
+        }
+      });
+    };
+
+    const sw = registration.installing || registration.waiting;
+    if (sw) {
+      trackWorker(sw);
+    }
+
+    // Catch new installations triggered by the browser
+    registration.addEventListener('updatefound', () => {
+      if (registration.installing) {
+        trackWorker(registration.installing);
+      }
+    });
+  });
+}
+
+// Helper: reject if a promise doesn't resolve within `ms` milliseconds
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
 }
 
 // Helper function to convert VAPID key

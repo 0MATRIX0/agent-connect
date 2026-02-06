@@ -2,13 +2,13 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Agent Notifier',
+  title: 'Agent Connect',
   description: 'Push notifications for AI coding agents',
   manifest: '/manifest.json',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',
-    title: 'Agent Notifier',
+    title: 'Agent Connect',
   },
 };
 

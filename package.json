@@ -1,23 +1,60 @@
 {
-  "name": "agent-notifier",
-  "version": "1.0.0",
-  "private": true,
+  "name": "agent-connect",
+  "version": "1.0.1",
+  "description": "Push notifications for AI coding agents — get notified when Claude Code, Copilot, or other agents need attention",
+  "keywords": [
+    "push-notifications",
+    "ai-agents",
+    "claude-code",
+    "pwa",
+    "web-push",
+    "developer-tools"
+  ],
+  "license": "MIT",
+  "author": "0MATRIX0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0MATRIX0/agent-connect.git"
+  },
+  "homepage": "https://github.com/0MATRIX0/agent-connect#readme",
+  "bugs": {
+    "url": "https://github.com/0MATRIX0/agent-connect/issues"
+  },
+  "bin": {
+    "agent-connect": "bin/agent-connect.js"
+  },
+  "files": [
+    "bin/",
+    "app/",
+    "lib/",
+    "public/",
+    "worker/",
+    "server.js",
+    "server-nextjs.js",
+    "next.config.js",
+    "tsconfig.json",
+    "tailwind.config.js",
+    "postcss.config.js",
+    ".next/",
+    "!.next/cache/",
+    "!.next/trace"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "dev": "concurrently --names \"nextjs,api\" --prefix-colors \"blue,green\" \"next dev -p 3110\" \"npm run dev:api\"",
     "dev:https": "node server-nextjs.js",
     "dev:api": "node server.js",
-    "dev:tunnel": "concurrently --names \"nextjs,api,tunnel\" --prefix-colors \"blue,green,yellow\" \"next dev -p 3110\" \"npm run dev:api\" \"npm run tunnel:cloudflare\"",
     "build": "next build",
-    "start": "concurrently --names \"nextjs,api\" --prefix-colors \"blue,green\" \"npm run start:https\" \"npm run start:api\"",
+    "start": "node bin/start.js",
     "start:nextjs": "next start -p 3110",
     "start:api": "node server.js",
     "start:https": "NODE_ENV=production node server-nextjs.js",
     "start:tailscale": "concurrently --names \"nextjs,api\" --prefix-colors \"blue,green\" \"DISABLE_SSL=true LISTEN_HOST=127.0.0.1 NODE_ENV=production node server-nextjs.js\" \"DISABLE_SSL=true API_HOST=127.0.0.1 node server.js\"",
-    "start:tunnel": "concurrently --names \"nextjs,api,tunnel\" --prefix-colors \"blue,green,yellow\" \"npm run start:https\" \"npm run start:api\" \"npm run tunnel:cloudflare\"",
-    "tunnel:cloudflare": "cloudflared tunnel --url http://localhost:3110",
     "lint": "next lint",
     "generate-vapid-keys": "node scripts/generate-vapid-keys.js",
-    "generate-ssl-certs": "bash scripts/generate-ssl-certs.sh"
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "next": "14.2.3",
