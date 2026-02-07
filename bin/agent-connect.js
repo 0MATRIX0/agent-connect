@@ -97,6 +97,10 @@ async function main() {
       await runSetup();
     }
 
+    // Ensure Claude Code hooks are up-to-date on every run
+    const { installClaudeHook } = require('./claude-hook');
+    installClaudeHook();
+
     const { startServers } = require('./start');
     await startServers();
     return;
