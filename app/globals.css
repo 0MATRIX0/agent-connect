@@ -2,7 +2,69 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --glow-emerald: #10B981;
+  --glow-rose: #F43F5E;
+  --glow-amber: #F59E0B;
+  --glow-blue: #3B82F6;
+  --glow-purple: #A855F7;
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 body {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-    'Helvetica Neue', Arial, sans-serif;
+  font-family: var(--font-inter), 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+@layer components {
+  .glass {
+    @apply bg-white/5 backdrop-blur-2xl border border-white/10 rounded-xl;
+  }
+
+  .glass-hover {
+    @apply transition-all duration-200;
+  }
+
+  .glass-hover:hover {
+    @apply bg-white/[0.08] border-white/[0.15];
+  }
+
+  .glass-input {
+    @apply bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-white/20 focus:ring-1 focus:ring-white/10 transition-colors;
+  }
+}
+
+/* Dark scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+/* Safe area for mobile bottom nav */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
 }

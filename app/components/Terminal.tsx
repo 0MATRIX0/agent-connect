@@ -1,22 +1,56 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 
 interface TerminalProps {
   sessionId: string;
   wsUrl: string;
   onSessionEnd?: (exitCode: number | null) => void;
+  onConnectionChange?: (status: 'connecting' | 'connected' | 'disconnected') => void;
 }
 
-export default function Terminal({ sessionId, wsUrl, onSessionEnd }: TerminalProps) {
+export interface TerminalHandle {
+  getBufferContent: () => string;
+  getSearchAddon: () => SearchAddon | null;
+  sendInput: (data: string) => void;
+}
+
+const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Terminal(
+  { sessionId, wsUrl, onSessionEnd, onConnectionChange },
+  ref
+) {
   const termRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+
+  // Expose methods to parent
+  useImperativeHandle(ref, () => ({
+    getBufferContent() {
+      if (!xtermRef.current) return '';
+      const buffer = xtermRef.current.buffer.active;
+      const lines: string[] = [];
+      for (let i = 0; i < buffer.length; i++) {
+        const line = buffer.getLine(i);
+        if (line) lines.push(line.translateToString());
+      }
+      return lines.join('\n');
+    },
+    getSearchAddon() {
+      return searchAddonRef.current;
+    },
+    sendInput(data: string) {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'input', data }));
+      }
+    },
+  }));
 
   useEffect(() => {
     if (!termRef.current) return;
@@ -24,13 +58,13 @@ export default function Terminal({ sessionId, wsUrl, onSessionEnd }: TerminalPro
     const term = new XTerm({
       cursorBlink: true,
       fontSize: 14,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New', monospace",
+      fontFamily: "var(--font-jetbrains), 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, monospace",
       theme: {
-        background: '#1a1b26',
+        background: '#050505',
         foreground: '#c0caf5',
         cursor: '#c0caf5',
         selectionBackground: '#33467c',
-        black: '#15161e',
+        black: '#0a0a0a',
         red: '#f7768e',
         green: '#9ece6a',
         yellow: '#e0af68',
@@ -50,14 +84,16 @@ export default function Terminal({ sessionId, wsUrl, onSessionEnd }: TerminalPro
     });
 
     const fitAddon = new FitAddon();
+    const searchAddon = new SearchAddon();
     term.loadAddon(fitAddon);
+    term.loadAddon(searchAddon);
     term.open(termRef.current);
 
-    // Delay fit to ensure DOM is ready
     setTimeout(() => fitAddon.fit(), 50);
 
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
+    searchAddonRef.current = searchAddon;
 
     // Connect WebSocket
     const ws = new WebSocket(wsUrl);
@@ -65,7 +101,7 @@ export default function Terminal({ sessionId, wsUrl, onSessionEnd }: TerminalPro
 
     ws.onopen = () => {
       setConnectionStatus('connected');
-      // Send initial resize
+      onConnectionChange?.('connected');
       const dims = fitAddon.proposeDimensions();
       if (dims) {
         ws.send(JSON.stringify({ type: 'resize', cols: dims.cols, rows: dims.rows }));
@@ -82,17 +118,18 @@ export default function Terminal({ sessionId, wsUrl, onSessionEnd }: TerminalPro
           onSessionEnd?.(msg.exitCode);
         }
       } catch {
-        // Raw data fallback
         term.write(event.data);
       }
     };
 
     ws.onclose = () => {
       setConnectionStatus('disconnected');
+      onConnectionChange?.('disconnected');
     };
 
     ws.onerror = () => {
       setConnectionStatus('disconnected');
+      onConnectionChange?.('disconnected');
     };
 
     // Forward terminal input to WebSocket
@@ -121,18 +158,20 @@ export default function Terminal({ sessionId, wsUrl, onSessionEnd }: TerminalPro
   }, [sessionId, wsUrl]);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full bg-obsidian">
       {connectionStatus === 'disconnected' && (
-        <div className="bg-red-900/50 text-red-200 px-4 py-2 text-sm text-center">
+        <div className="bg-rose-500/10 text-rose-300 px-4 py-1.5 text-xs text-center border-b border-rose-500/20">
           Connection lost. Refresh to reconnect.
         </div>
       )}
       {connectionStatus === 'connecting' && (
-        <div className="bg-yellow-900/50 text-yellow-200 px-4 py-2 text-sm text-center">
+        <div className="bg-amber-500/10 text-amber-300 px-4 py-1.5 text-xs text-center border-b border-amber-500/20">
           Connecting...
         </div>
       )}
       <div ref={termRef} className="flex-1" style={{ minHeight: 0 }} />
     </div>
   );
-}
+});
+
+export default Terminal;
