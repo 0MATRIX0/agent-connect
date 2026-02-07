@@ -10,6 +10,7 @@ import IconButton from '../../components/ui/IconButton';
 import TerminalSearch from '../../components/terminal/TerminalSearch';
 import StatusBar from '../../components/terminal/StatusBar';
 import VirtualKeypad from '../../components/terminal/VirtualKeypad';
+import { useVisualViewport } from '../../hooks/useVisualViewport';
 import type { TerminalHandle } from '../../components/Terminal';
 import type { SearchAddon } from '@xterm/addon-search';
 
@@ -41,6 +42,7 @@ export default function TerminalPage() {
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [isTouchDevice, setIsTouchDevice] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
+  const { viewportHeight } = useVisualViewport();
 
   useEffect(() => {
     fetchSession();
@@ -142,7 +144,10 @@ export default function TerminalPage() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-obsidian relative">
+    <div
+      className="flex flex-col bg-obsidian relative"
+      style={{ height: viewportHeight, transition: 'height 0.1s ease-out' }}
+    >
       {/* Floating toolbar */}
       <FloatingToolbar position="top-right" autoHide autoHideDelay={3000}>
         <IconButton
