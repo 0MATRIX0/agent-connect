@@ -7,8 +7,13 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const webpush = require('web-push');
+const { WebSocketServer } = require('ws');
 
 const os = require('os');
+
+const projects = require('./lib/server/projects');
+const sessionManager = require('./lib/server/sessions');
+const notifications = require('./lib/server/notifications');
 
 const PORT = process.env.API_PORT || 3109;
 const DATA_DIR = process.env.AGENT_CONNECT_DATA_DIR || path.join(os.homedir(), '.agent-connect', 'data');
@@ -126,7 +131,7 @@ function sendJson(res, status, data) {
     res.writeHead(status, {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type',
     });
     res.end(JSON.stringify(data));
@@ -141,7 +146,7 @@ async function handleRequest(req, res) {
     if (req.method === 'OPTIONS') {
         res.writeHead(204, {
             'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+            'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
             'Access-Control-Allow-Headers': 'Content-Type',
         });
         res.end();
@@ -204,6 +209,15 @@ async function handleRequest(req, res) {
             if (!payload.title || !payload.body) {
                 return sendJson(res, 400, { error: 'Title and body are required' });
             }
+
+            // Persist notification before sending push
+            notifications.addNotification({
+                title: payload.title,
+                body: payload.body,
+                type: payload.type || 'completed',
+                icon: payload.icon,
+                data: payload.data,
+            });
 
             const subscriptions = getSubscriptions();
 
@@ -287,6 +301,103 @@ async function handleRequest(req, res) {
             return sendJson(res, 200, { status: 'ok', subscriptions: getSubscriptions().length });
         }
 
+        // --- Project endpoints ---
+
+        // List all projects
+        if (pathname === '/api/projects' && req.method === 'GET') {
+            return sendJson(res, 200, projects.getProjects());
+        }
+
+        // Add a project
+        if (pathname === '/api/projects' && req.method === 'POST') {
+            const { name, path: projectPath } = await parseBody(req);
+            try {
+                const project = projects.addProject(name, projectPath);
+                return sendJson(res, 201, project);
+            } catch (error) {
+                return sendJson(res, 400, { error: error.message });
+            }
+        }
+
+        // Delete a project
+        const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
+        if (projectMatch && req.method === 'DELETE') {
+            try {
+                const removed = projects.removeProject(projectMatch[1]);
+                return sendJson(res, 200, { success: true, project: removed });
+            } catch (error) {
+                return sendJson(res, 404, { error: error.message });
+            }
+        }
+
+        // --- Session endpoints ---
+
+        // List sessions (optional ?projectId= filter)
+        if (pathname === '/api/sessions' && req.method === 'GET') {
+            const projectId = url.searchParams.get('projectId') || undefined;
+            return sendJson(res, 200, sessionManager.getAllSessions(projectId));
+        }
+
+        // Launch a session
+        if (pathname === '/api/sessions' && req.method === 'POST') {
+            const { projectId } = await parseBody(req);
+            const project = projects.getProject(projectId);
+            if (!project) {
+                return sendJson(res, 404, { error: 'Project not found' });
+            }
+            try {
+                const session = sessionManager.createSession(project.id, project.name, project.path);
+                return sendJson(res, 201, session);
+            } catch (error) {
+                return sendJson(res, 500, { error: error.message });
+            }
+        }
+
+        // Get a single session
+        const sessionGetMatch = pathname.match(/^\/api\/sessions\/([^/]+)$/);
+        if (sessionGetMatch && req.method === 'GET') {
+            const session = sessionManager.getSession(sessionGetMatch[1]);
+            if (!session) {
+                return sendJson(res, 404, { error: 'Session not found' });
+            }
+            return sendJson(res, 200, session);
+        }
+
+        // Kill a session
+        const sessionDeleteMatch = pathname.match(/^\/api\/sessions\/([^/]+)$/);
+        if (sessionDeleteMatch && req.method === 'DELETE') {
+            try {
+                const session = sessionManager.killSession(sessionDeleteMatch[1]);
+                return sendJson(res, 200, { success: true, session });
+            } catch (error) {
+                return sendJson(res, 404, { error: error.message });
+            }
+        }
+
+        // --- Notification history endpoints ---
+
+        // List notifications
+        if (pathname === '/api/notifications' && req.method === 'GET') {
+            return sendJson(res, 200, notifications.getNotifications());
+        }
+
+        // Clear all notifications
+        if (pathname === '/api/notifications' && req.method === 'DELETE') {
+            notifications.clearNotifications();
+            return sendJson(res, 200, { success: true, message: 'All notifications cleared' });
+        }
+
+        // Delete a single notification
+        const notificationMatch = pathname.match(/^\/api\/notifications\/([^/]+)$/);
+        if (notificationMatch && req.method === 'DELETE') {
+            try {
+                const removed = notifications.deleteNotification(notificationMatch[1]);
+                return sendJson(res, 200, { success: true, notification: removed });
+            } catch (error) {
+                return sendJson(res, 404, { error: error.message });
+            }
+        }
+
         // 404
         sendJson(res, 404, { error: 'Not found' });
 
@@ -323,6 +434,67 @@ if (useHttps) {
 
 const displayHost = process.env.APP_HOSTNAME || HOST;
 
+// WebSocket server for terminal sessions (noServer mode — shares HTTP server)
+const wss = new WebSocketServer({ noServer: true });
+
+server.on('upgrade', (request, socket, head) => {
+    const url = new URL(request.url, `http://localhost:${PORT}`);
+    const wsMatch = url.pathname.match(/^\/ws\/sessions\/([^/]+)$/);
+
+    if (!wsMatch) {
+        socket.destroy();
+        return;
+    }
+
+    const sessionId = wsMatch[1];
+    const session = sessionManager.getRawSession(sessionId);
+
+    if (!session) {
+        socket.destroy();
+        return;
+    }
+
+    wss.handleUpgrade(request, socket, head, (ws) => {
+        // Attach client to session
+        sessionManager.attachClient(sessionId, ws);
+
+        // Forward client input to PTY
+        ws.on('message', (message) => {
+            try {
+                const parsed = JSON.parse(message.toString());
+                if (parsed.type === 'input') {
+                    sessionManager.writeToSession(sessionId, parsed.data);
+                } else if (parsed.type === 'resize') {
+                    sessionManager.resizeSession(sessionId, parsed.cols, parsed.rows);
+                }
+            } catch {
+                // Raw text fallback
+                sessionManager.writeToSession(sessionId, message.toString());
+            }
+        });
+
+        // Detach on close
+        ws.on('close', () => {
+            sessionManager.detachClient(sessionId, ws);
+        });
+    });
+});
+
+// Graceful shutdown
+function shutdown() {
+    console.log('\nShutting down...');
+    sessionManager.cleanupAllSessions();
+    wss.close();
+    server.close(() => {
+        process.exit(0);
+    });
+    // Force exit after 5 seconds
+    setTimeout(() => process.exit(1), 5000);
+}
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
 server.listen(PORT, HOST, () => {
     console.log(`Agent Notifier API server running on ${protocol}://${HOST}:${PORT}`);
     console.log(`\nEndpoints:`);
@@ -330,6 +502,14 @@ server.listen(PORT, HOST, () => {
     console.log(`  POST ${protocol}://${displayHost}:${PORT}/api/unsubscribe`);
     console.log(`  POST ${protocol}://${displayHost}:${PORT}/api/notify`);
     console.log(`  GET  ${protocol}://${displayHost}:${PORT}/api/health`);
+    console.log(`  GET  ${protocol}://${displayHost}:${PORT}/api/projects`);
+    console.log(`  POST ${protocol}://${displayHost}:${PORT}/api/projects`);
+    console.log(`  GET  ${protocol}://${displayHost}:${PORT}/api/sessions`);
+    console.log(`  POST ${protocol}://${displayHost}:${PORT}/api/sessions`);
+    console.log(`  GET  ${protocol}://${displayHost}:${PORT}/api/notifications`);
+    console.log(`  DEL  ${protocol}://${displayHost}:${PORT}/api/notifications`);
+    console.log(`  DEL  ${protocol}://${displayHost}:${PORT}/api/notifications/:id`);
+    console.log(`  WS   ws://${displayHost}:${PORT}/ws/sessions/:id`);
     console.log(`\nExample notification:`);
     console.log(`  curl ${useHttps ? '-k ' : ''}-X POST ${protocol}://${displayHost}:${PORT}/api/notify \\`);
     console.log(`    -H "Content-Type: application/json" \\`);
