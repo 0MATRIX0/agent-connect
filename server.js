@@ -363,6 +363,55 @@ async function handleRequest(req, res) {
             return sendJson(res, 200, session);
         }
 
+        // Get session stats (PID, RSS, CPU)
+        const sessionStatsMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/stats$/);
+        if (sessionStatsMatch && req.method === 'GET') {
+            const session = sessionManager.getRawSession(sessionStatsMatch[1]);
+            if (!session || session.status !== 'running') {
+                return sendJson(res, 404, { error: 'Session not found or not running' });
+            }
+            try {
+                const pid = session.pid;
+                const fs = require('fs');
+                let rss = 0;
+                let cpu = 0;
+                try {
+                    const statusContent = fs.readFileSync(`/proc/${pid}/status`, 'utf-8');
+                    const rssMatch = statusContent.match(/VmRSS:\s+(\d+)\s+kB/);
+                    if (rssMatch) rss = parseInt(rssMatch[1]) * 1024; // bytes
+                    const statContent = fs.readFileSync(`/proc/${pid}/stat`, 'utf-8');
+                    const fields = statContent.split(' ');
+                    const utime = parseInt(fields[13]) || 0;
+                    const stime = parseInt(fields[14]) || 0;
+                    cpu = utime + stime;
+                } catch {
+                    // /proc not available (non-Linux)
+                }
+                const uptime = Math.floor((Date.now() - new Date(session.startedAt).getTime()) / 1000);
+                return sendJson(res, 200, { pid, rss, cpu, uptime });
+            } catch (error) {
+                return sendJson(res, 500, { error: error.message });
+            }
+        }
+
+        // Get session output (last N lines)
+        const sessionOutputMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/output$/);
+        if (sessionOutputMatch && req.method === 'GET') {
+            const session = sessionManager.getRawSession(sessionOutputMatch[1]);
+            if (!session) {
+                return sendJson(res, 404, { error: 'Session not found' });
+            }
+            const lineCount = parseInt(url.searchParams.get('lines') || '5');
+            const scrollback = session.scrollback || [];
+            // Join all scrollback, split by newlines, take last N
+            const allText = scrollback.join('');
+            // Strip ANSI escape codes for cleaner output
+            const cleanText = allText.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
+            const allLines = cleanText.split('\n').filter(l => l.trim().length > 0);
+            const lastLines = allLines.slice(-lineCount);
+            return sendJson(res, 200, { lines: lastLines });
+        }
+
         // Kill a session
         const sessionDeleteMatch = pathname.match(/^\/api\/sessions\/([^/]+)$/);
         if (sessionDeleteMatch && req.method === 'DELETE') {

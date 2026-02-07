@@ -1,571 +1,333 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { Play, MoreVertical, Trash2, Terminal, Zap, FolderPlus } from 'lucide-react';
+import GlassCard from './components/ui/GlassCard';
+import StatusDot from './components/ui/StatusDot';
 
-type SubscriptionStatus = 'loading' | 'unsupported' | 'denied' | 'subscribed' | 'unsubscribed';
-
-interface StoredNotification {
+interface Project {
   id: string;
-  title: string;
-  body: string;
-  type: string;
-  icon: string;
-  data: Record<string, unknown>;
-  timestamp: string;
+  name: string;
+  path: string;
+  createdAt: string;
 }
 
-const typeColors: Record<string, string> = {
-  completed: 'bg-green-500',
-  planning_complete: 'bg-blue-400',
-  approval_needed: 'bg-orange-500',
-  input_needed: 'bg-yellow-500',
-  command_execution: 'bg-purple-400',
-  error: 'bg-red-500',
-};
-
-function relativeTime(timestamp: string): string {
-  const now = Date.now();
-  const then = new Date(timestamp).getTime();
-  const diff = now - then;
-
-  const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return 'just now';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(timestamp).toLocaleDateString();
+interface Session {
+  id: string;
+  projectId: string;
+  projectName: string;
+  projectPath: string;
+  status: 'running' | 'stopped';
+  pid: number;
+  startedAt: string;
+  stoppedAt: string | null;
 }
 
-export default function Home() {
-  const [status, setStatus] = useState<SubscriptionStatus>('loading');
-  const [subscription, setSubscription] = useState<PushSubscription | null>(null);
-  const [message, setMessage] = useState<string>('');
-  const [apiUrl, setApiUrl] = useState<string>('');
-  const [vapidPublicKey, setVapidPublicKey] = useState<string>('');
-  const [apiBaseUrl, setApiBaseUrl] = useState<string>('');
-  const [configLoaded, setConfigLoaded] = useState(false);
-  const [notificationHistory, setNotificationHistory] = useState<StoredNotification[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(true);
+function formatDuration(startedAt: string, stoppedAt: string | null) {
+  const start = new Date(startedAt).getTime();
+  const end = stoppedAt ? new Date(stoppedAt).getTime() : Date.now();
+  const seconds = Math.floor((end - start) / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return `${hours}h ${minutes}m`;
+}
 
-  const fetchNotifications = useCallback(async () => {
-    try {
-      const res = await fetch('/api/notifications');
-      if (res.ok) {
-        const data = await res.json();
-        setNotificationHistory(Array.isArray(data) ? data : []);
-      }
-    } catch {
-      // API may be unreachable
-    } finally {
-      setHistoryLoading(false);
-    }
+export default function Dashboard() {
+  const router = useRouter();
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [loadingProjects, setLoadingProjects] = useState(true);
+  const [loadingSessions, setLoadingSessions] = useState(true);
+  const [launching, setLaunching] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState<string | null>(null);
+  const [sessionOutputs, setSessionOutputs] = useState<Record<string, string[]>>({});
+
+  useEffect(() => {
+    fetchProjects();
+    fetchSessions();
+    const interval = setInterval(fetchSessions, 5000);
+    return () => clearInterval(interval);
   }, []);
 
+  // Fetch mini log tails for running sessions
   useEffect(() => {
-    async function loadConfig() {
-      try {
-        const res = await fetch('/api/config');
-        const config = await res.json();
-        setVapidPublicKey(config.vapidPublicKey || '');
-        setApiBaseUrl(config.apiUrl || '');
-        setConfigLoaded(true);
-      } catch (err) {
-        console.error('Failed to load config:', err);
-        setConfigLoaded(true);
-      }
-    }
-    loadConfig();
-    fetchNotifications();
-  }, [fetchNotifications]);
+    const running = sessions.filter(s => s.status === 'running');
+    if (running.length === 0) return;
 
-  useEffect(() => {
-    if (!configLoaded) return;
-    const baseUrl = apiBaseUrl || window.location.origin;
-    setApiUrl(`${baseUrl}/api/notify`);
-    checkSubscription();
-  }, [configLoaded, apiBaseUrl]);
-
-  async function checkSubscription() {
-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-      setStatus('unsupported');
-      return;
+    async function fetchOutputs() {
+      const results: Record<string, string[]> = {};
+      await Promise.all(
+        running.map(async (s) => {
+          try {
+            const res = await fetch(`/api/sessions/${s.id}/output?lines=3`);
+            if (res.ok) {
+              const data = await res.json();
+              results[s.id] = data.lines || [];
+            }
+          } catch {
+            // ignore
+          }
+        })
+      );
+      setSessionOutputs(prev => ({ ...prev, ...results }));
     }
 
+    fetchOutputs();
+    const interval = setInterval(fetchOutputs, 8000);
+    return () => clearInterval(interval);
+  }, [sessions]);
+
+  async function fetchProjects() {
     try {
-      const registrations = await navigator.serviceWorker.getRegistrations();
-
-      if (registrations.length === 0) {
-        setStatus('unsubscribed');
-        return;
+      const res = await fetch('/api/projects');
+      if (res.ok) {
+        const data = await res.json();
+        setProjects(Array.isArray(data) ? data : []);
       }
-
-      const registration = await navigator.serviceWorker.ready;
-      const existingSubscription = await registration.pushManager.getSubscription();
-
-      if (existingSubscription) {
-        setSubscription(existingSubscription);
-        setStatus('subscribed');
-      } else {
-        setStatus('unsubscribed');
-      }
-    } catch (error) {
-      console.error('Error checking subscription:', error);
-      setStatus('unsubscribed');
+    } catch {
+      // ignore
+    } finally {
+      setLoadingProjects(false);
     }
   }
 
-  async function subscribe() {
+  async function fetchSessions() {
     try {
-      setMessage('Preparing service worker...');
-      const existingRegs = await navigator.serviceWorker.getRegistrations();
-      for (const reg of existingRegs) {
-        await reg.unregister();
+      const res = await fetch('/api/sessions');
+      if (res.ok) {
+        const data = await res.json();
+        setSessions(Array.isArray(data) ? data : []);
       }
-      const cacheNames = await caches.keys();
-      await Promise.all(cacheNames.map(name => caches.delete(name)));
-
-      setMessage('Registering service worker...');
-      const registration = await withTimeout(
-        navigator.serviceWorker.register('/push-sw.js', { updateViaCache: 'none' }),
-        10000,
-        'Service worker registration timed out'
-      );
-
-      setMessage('Waiting for service worker to activate...');
-      await withTimeout(
-        waitForActivation(registration),
-        30000,
-        'Service worker failed to activate (timed out)'
-      );
-
-      setMessage('Requesting notification permission...');
-      const permission = await withTimeout(
-        Notification.requestPermission(),
-        30000,
-        'Permission request timed out'
-      );
-      if (permission !== 'granted') {
-        setStatus('denied');
-        setMessage('Notification permission denied');
-        return;
-      }
-
-      if (!vapidPublicKey || vapidPublicKey.trim().length === 0) {
-        throw new Error('VAPID public key is missing — check server config');
-      }
-
-      setMessage('Creating push subscription...');
-      const newSubscription = await withTimeout(
-        registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
-        }),
-        15000,
-        'Push subscription timed out — VAPID key may be invalid'
-      );
-
-      setMessage('Saving subscription to server...');
-      const baseUrl = apiBaseUrl || '';
-      const controller = new AbortController();
-      const fetchTimeout = setTimeout(() => controller.abort(), 10000);
-      let response: Response;
-      try {
-        response = await fetch(`${baseUrl}/api/subscribe`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(newSubscription.toJSON()),
-          signal: controller.signal,
-        });
-      } finally {
-        clearTimeout(fetchTimeout);
-      }
-
-      if (response.ok) {
-        setSubscription(newSubscription);
-        setStatus('subscribed');
-        setMessage('Successfully subscribed to notifications!');
-      } else {
-        throw new Error('Failed to save subscription on server');
-      }
-    } catch (error) {
-      console.error('Subscribe error:', error);
-      const msg = error instanceof Error ? error.message : 'Unknown error';
-      setMessage(`Error: ${msg.replace('The operation was aborted', 'Server request timed out')}`);
+    } catch {
+      // ignore
+    } finally {
+      setLoadingSessions(false);
     }
   }
 
-  async function unsubscribe() {
+  async function launchSession(project: Project) {
+    setLaunching(project.id);
     try {
-      setMessage('Unsubscribing...');
-
-      if (subscription) {
-        await subscription.unsubscribe();
-
-        const baseUrl = apiBaseUrl || '';
-        await fetch(`${baseUrl}/api/unsubscribe`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ endpoint: subscription.endpoint }),
-        });
-
-        setSubscription(null);
-        setStatus('unsubscribed');
-        setMessage('Successfully unsubscribed from notifications');
-      }
-    } catch (error) {
-      console.error('Unsubscribe error:', error);
-      setMessage(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-
-  async function sendTestNotification() {
-    try {
-      setMessage('Sending test notification...');
-
-      const baseUrl = apiBaseUrl || '';
-      const response = await fetch(`${baseUrl}/api/notify`, {
+      const res = await fetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: 'Agent Connect Test',
-          body: 'This is a test notification!',
-          type: 'completed',
-        }),
+        body: JSON.stringify({ projectId: project.id }),
       });
-
-      const data = await response.json();
-
-      if (response.ok) {
-        setMessage(`Test sent! ${data.message}`);
-        fetchNotifications();
-      } else {
-        setMessage(`Error: ${data.error}`);
-      }
-    } catch (error) {
-      console.error('Test notification error:', error);
-      setMessage(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-
-  async function deleteNotification(id: string) {
-    try {
-      const res = await fetch(`/api/notifications/${id}`, { method: 'DELETE' });
+      const data = await res.json();
       if (res.ok) {
-        setNotificationHistory(prev => prev.filter(n => n.id !== id));
+        router.push(`/terminal/${data.id}`);
       }
     } catch {
       // ignore
+    } finally {
+      setLaunching(null);
     }
   }
 
-  async function clearAllNotifications() {
+  async function deleteProject(id: string) {
     try {
-      const res = await fetch('/api/notifications', { method: 'DELETE' });
-      if (res.ok) {
-        setNotificationHistory([]);
-      }
+      await fetch(`/api/projects/${id}`, { method: 'DELETE' });
+      setProjects(prev => prev.filter(p => p.id !== id));
     } catch {
       // ignore
     }
+    setMenuOpen(null);
   }
 
-  function copyToClipboard(text: string, label: string) {
-    navigator.clipboard.writeText(text);
-    setMessage(`${label} copied to clipboard!`);
-  }
+  const runningSessions = sessions.filter(s => s.status === 'running');
 
   return (
-    <main className="container mx-auto px-4 py-8 max-w-2xl">
-      <h1 className="text-3xl font-bold mb-2">Agent Connect</h1>
-      <p className="text-gray-400 mb-8">
-        Push notifications for AI coding agents like Claude Code
-      </p>
-
-      {/* Status Card */}
-      <div className="bg-gray-800 rounded-lg p-6 mb-6">
-        <h2 className="text-xl font-semibold mb-4">Notification Status</h2>
-
-        <div className="flex items-center gap-3 mb-4">
-          <div
-            className={`w-3 h-3 rounded-full ${
-              status === 'subscribed'
-                ? 'bg-green-500'
-                : status === 'denied'
-                ? 'bg-red-500'
-                : status === 'unsupported'
-                ? 'bg-yellow-500'
-                : 'bg-gray-500'
-            }`}
-          />
-          <span className="text-lg">
-            {status === 'loading' && 'Checking status...'}
-            {status === 'unsupported' && 'Push notifications not supported'}
-            {status === 'denied' && 'Notifications blocked'}
-            {status === 'subscribed' && 'Notifications enabled'}
-            {status === 'unsubscribed' && 'Notifications disabled'}
-          </span>
-        </div>
-
-        <div className="flex gap-3">
-          {status === 'unsubscribed' && (
-            <button
-              onClick={subscribe}
-              className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg font-medium transition-colors"
-            >
-              Enable Notifications
-            </button>
-          )}
-
-          {status === 'subscribed' && (
-            <>
-              <button
-                onClick={unsubscribe}
-                className="bg-gray-600 hover:bg-gray-700 px-4 py-2 rounded-lg font-medium transition-colors"
-              >
-                Disable Notifications
-              </button>
-              <button
-                onClick={sendTestNotification}
-                className="bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg font-medium transition-colors"
-              >
-                Send Test Notification
-              </button>
-            </>
-          )}
-
-          {status === 'denied' && (
-            <p className="text-sm text-gray-400">
-              Please enable notifications in your browser settings and refresh the page.
-            </p>
-          )}
-        </div>
-
-        {message && (
-          <p className="mt-4 text-sm text-gray-300 bg-gray-700 rounded px-3 py-2">
-            {message}
-          </p>
-        )}
+    <main className="px-4 sm:px-6 lg:px-8 py-8 max-w-6xl mx-auto">
+      {/* Welcome */}
+      <div className="mb-8">
+        <h1 className="text-2xl sm:text-3xl font-bold text-white mb-1">Dashboard</h1>
+        <p className="text-gray-500 text-sm">Manage your projects and monitor active sessions</p>
       </div>
 
-      {/* Notification History */}
-      <div className="bg-gray-800 rounded-lg p-6 mb-6">
+      {/* Status indicators */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-8">
+        <GlassCard className="p-4">
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Projects</p>
+          <p className="text-2xl font-bold text-white">{projects.length}</p>
+        </GlassCard>
+        <GlassCard className="p-4">
+          <div className="flex items-center gap-2 mb-1">
+            <StatusDot status="running" size="sm" />
+            <p className="text-xs text-gray-500 uppercase tracking-wider">Active Sessions</p>
+          </div>
+          <p className="text-2xl font-bold text-white">{runningSessions.length}</p>
+        </GlassCard>
+        <GlassCard className="p-4 col-span-2 sm:col-span-1">
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Total Sessions</p>
+          <p className="text-2xl font-bold text-white">{sessions.length}</p>
+        </GlassCard>
+      </div>
+
+      {/* Active Sessions */}
+      {runningSessions.length > 0 && (
+        <div className="mb-8">
+          <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <StatusDot status="running" size="sm" />
+            Active Sessions
+          </h2>
+          <div className="flex gap-3 overflow-x-auto pb-2 -mx-4 px-4 sm:mx-0 sm:px-0">
+            {runningSessions.map(session => (
+              <GlassCard
+                key={session.id}
+                hover
+                onClick={() => router.push(`/terminal/${session.id}`)}
+                className="p-4 min-w-[280px] max-w-[340px] flex-shrink-0"
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <StatusDot status="running" size="sm" />
+                  <span className="font-medium text-white text-sm truncate">{session.projectName}</span>
+                </div>
+                <p className="text-xs text-gray-500 mb-2">
+                  Running for {formatDuration(session.startedAt, null)}
+                </p>
+                {/* Mini log tail */}
+                {sessionOutputs[session.id] && sessionOutputs[session.id].length > 0 && (
+                  <div className="bg-black/30 rounded-lg p-2 font-mono text-[10px] text-gray-500 leading-relaxed max-h-16 overflow-hidden">
+                    {sessionOutputs[session.id].map((line, i) => (
+                      <div key={i} className="truncate">{line}</div>
+                    ))}
+                  </div>
+                )}
+              </GlassCard>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Projects Grid */}
+      <div className="mb-8">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold">Notification History</h2>
-          {notificationHistory.length > 0 && (
-            <button
-              onClick={clearAllNotifications}
-              className="text-sm text-gray-400 hover:text-red-400 transition-colors"
-            >
-              Clear All
-            </button>
-          )}
+          <h2 className="text-lg font-semibold text-white">Projects</h2>
+          <button
+            onClick={() => router.push('/projects')}
+            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
+          >
+            <FolderPlus className="w-3.5 h-3.5" />
+            Add Project
+          </button>
         </div>
 
-        {historyLoading ? (
-          <p className="text-gray-500 text-sm">Loading...</p>
-        ) : notificationHistory.length === 0 ? (
-          <p className="text-gray-500 text-sm">No notifications yet</p>
+        {loadingProjects ? (
+          <p className="text-gray-500 text-sm">Loading projects...</p>
+        ) : projects.length === 0 ? (
+          <GlassCard className="p-8 text-center">
+            <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center mx-auto mb-3">
+              <Zap className="w-6 h-6 text-gray-500" />
+            </div>
+            <p className="text-gray-400 mb-1">No projects yet</p>
+            <p className="text-gray-600 text-sm mb-4">Add a project to launch Claude Code sessions</p>
+            <button
+              onClick={() => router.push('/projects')}
+              className="px-4 py-2 rounded-lg bg-emerald-500/10 text-emerald-400 text-sm font-medium hover:bg-emerald-500/20 transition-colors"
+            >
+              Add Your First Project
+            </button>
+          </GlassCard>
         ) : (
-          <div className="space-y-2 max-h-96 overflow-y-auto">
-            {notificationHistory.map((n) => (
-              <div
-                key={n.id}
-                className="flex items-start gap-3 bg-gray-900 rounded-lg px-4 py-3 group"
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {projects.map(project => (
+              <GlassCard
+                key={project.id}
+                hover
+                className="p-5 group relative"
               >
-                <span
-                  className={`w-2.5 h-2.5 rounded-full mt-1.5 flex-shrink-0 ${
-                    typeColors[n.type] || 'bg-gray-500'
-                  }`}
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="font-medium text-sm truncate">{n.title}</span>
-                    <span className="text-xs text-gray-500 flex-shrink-0">
-                      {relativeTime(n.timestamp)}
-                    </span>
-                  </div>
-                  <p className="text-sm text-gray-400 mt-0.5 break-words">{n.body}</p>
+                {/* Three-dot menu */}
+                <div className="absolute top-3 right-3">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuOpen(menuOpen === project.id ? null : project.id);
+                    }}
+                    className="p-1 rounded text-gray-600 hover:text-white hover:bg-white/10 transition-colors opacity-0 group-hover:opacity-100"
+                  >
+                    <MoreVertical className="w-4 h-4" />
+                  </button>
+
+                  {menuOpen === project.id && (
+                    <div className="absolute right-0 top-8 w-36 bg-void border border-white/10 rounded-lg shadow-xl z-10 overflow-hidden animate-scale-in">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteProject(project.id);
+                        }}
+                        className="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-400 hover:text-rose-400 hover:bg-white/5 transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Delete
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <button
-                  onClick={() => deleteNotification(n.id)}
-                  className="text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5"
-                  title="Delete"
-                >
-                  &times;
-                </button>
-              </div>
+
+                <div onClick={() => launchSession(project)} className="cursor-pointer">
+                  <h3 className="font-semibold text-white mb-1 pr-6">{project.name}</h3>
+                  <p className="text-xs text-gray-500 font-mono truncate mb-3">{project.path}</p>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-gray-600">
+                      Added {new Date(project.createdAt).toLocaleDateString()}
+                    </span>
+                    <div className={`
+                      flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all
+                      ${launching === project.id
+                        ? 'bg-emerald-500/20 text-emerald-400'
+                        : 'bg-white/5 text-gray-400 group-hover:bg-emerald-500/10 group-hover:text-emerald-400'
+                      }
+                    `}>
+                      {launching === project.id ? (
+                        <span className="animate-pulse">Launching...</span>
+                      ) : (
+                        <>
+                          <Play className="w-3 h-3" />
+                          Launch
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </GlassCard>
             ))}
           </div>
         )}
       </div>
 
-      {/* API Info Card */}
-      <div className="bg-gray-800 rounded-lg p-6 mb-6">
-        <h2 className="text-xl font-semibold mb-4">API Endpoint</h2>
-        <p className="text-gray-400 text-sm mb-3">
-          Use this endpoint to send notifications from your AI agent:
-        </p>
-
-        <div className="bg-gray-900 rounded p-3 font-mono text-sm mb-3 flex items-center justify-between">
-          <code className="text-green-400 break-all">{apiUrl}</code>
-          <button
-            onClick={() => copyToClipboard(apiUrl, 'API URL')}
-            className="ml-3 text-gray-400 hover:text-white flex-shrink-0"
-            title="Copy"
-          >
-            📋
-          </button>
-        </div>
-
-        <details className="mt-4">
-          <summary className="cursor-pointer text-gray-400 hover:text-white">
-            Example usage
-          </summary>
-          <pre className="bg-gray-900 rounded p-3 mt-2 text-xs overflow-x-auto">
-{`# Using the CLI (recommended)
-agent-connect notify "Task completed!" --type completed
-
-# Using curl
-curl -X POST ${apiUrl} \\
-  -H "Content-Type: application/json" \\
-  -d '{"title": "Claude Code", "body": "Task completed!", "type": "completed"}'`}
-          </pre>
-        </details>
-      </div>
-
-      {/* VAPID Key Card */}
-      {vapidPublicKey && (
-        <div className="bg-gray-800 rounded-lg p-6">
-          <h2 className="text-xl font-semibold mb-4">VAPID Public Key</h2>
-          <div className="bg-gray-900 rounded p-3 font-mono text-xs break-all flex items-start justify-between">
-            <code className="text-yellow-400">{vapidPublicKey}</code>
-            <button
-              onClick={() => copyToClipboard(vapidPublicKey, 'VAPID key')}
-              className="ml-3 text-gray-400 hover:text-white flex-shrink-0"
-              title="Copy"
-            >
-              📋
-            </button>
+      {/* Stopped Sessions */}
+      {sessions.filter(s => s.status === 'stopped').length > 0 && (
+        <div>
+          <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <Terminal className="w-4 h-4 text-gray-500" />
+            Recent Sessions
+          </h2>
+          <div className="space-y-2">
+            {sessions.filter(s => s.status === 'stopped').slice(0, 5).map(session => (
+              <GlassCard
+                key={session.id}
+                hover
+                onClick={() => router.push(`/terminal/${session.id}`)}
+                className="p-4 flex items-center justify-between"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <StatusDot status="stopped" size="sm" />
+                  <div className="min-w-0">
+                    <span className="text-sm text-white font-medium truncate block">{session.projectName}</span>
+                    <span className="text-xs text-gray-500">
+                      {formatDuration(session.startedAt, session.stoppedAt)}
+                    </span>
+                  </div>
+                </div>
+                <span className="text-xs text-gray-600 flex-shrink-0">View Output</span>
+              </GlassCard>
+            ))}
           </div>
         </div>
       )}
-
-      {/* Notification Types */}
-      <div className="bg-gray-800 rounded-lg p-6 mt-6">
-        <h2 className="text-xl font-semibold mb-4">Notification Types</h2>
-        <div className="space-y-3 text-sm">
-          <div className="flex items-start gap-3">
-            <span className="text-green-500">●</span>
-            <div>
-              <code className="bg-gray-900 px-2 py-1 rounded">completed</code>
-              <span className="text-gray-400 ml-2">- Task finished successfully</span>
-            </div>
-          </div>
-          <div className="flex items-start gap-3">
-            <span className="text-blue-400">●</span>
-            <div>
-              <code className="bg-gray-900 px-2 py-1 rounded">planning_complete</code>
-              <span className="text-gray-400 ml-2">- Planning finished, ready for review</span>
-            </div>
-          </div>
-          <div className="flex items-start gap-3">
-            <span className="text-orange-500">●</span>
-            <div>
-              <code className="bg-gray-900 px-2 py-1 rounded">approval_needed</code>
-              <span className="text-gray-400 ml-2">- Need approval before proceeding</span>
-            </div>
-          </div>
-          <div className="flex items-start gap-3">
-            <span className="text-yellow-500">●</span>
-            <div>
-              <code className="bg-gray-900 px-2 py-1 rounded">input_needed</code>
-              <span className="text-gray-400 ml-2">- Agent needs information or clarification</span>
-            </div>
-          </div>
-          <div className="flex items-start gap-3">
-            <span className="text-purple-400">●</span>
-            <div>
-              <code className="bg-gray-900 px-2 py-1 rounded">command_execution</code>
-              <span className="text-gray-400 ml-2">- A command finished executing</span>
-            </div>
-          </div>
-          <div className="flex items-start gap-3">
-            <span className="text-red-500">●</span>
-            <div>
-              <code className="bg-gray-900 px-2 py-1 rounded">error</code>
-              <span className="text-gray-400 ml-2">- Something went wrong</span>
-            </div>
-          </div>
-        </div>
-      </div>
     </main>
   );
-}
-
-// Helper: wait for a service worker registration to reach the 'activated' state.
-function waitForActivation(registration: ServiceWorkerRegistration): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    if (registration.active) {
-      resolve();
-      return;
-    }
-
-    let settled = false;
-    const done = (err?: Error) => {
-      if (settled) return;
-      settled = true;
-      err ? reject(err) : resolve();
-    };
-
-    const trackWorker = (sw: ServiceWorker) => {
-      sw.addEventListener('statechange', () => {
-        if (sw.state === 'activated' || registration.active) {
-          done();
-        } else if (sw.state === 'redundant') {
-          if (registration.active) {
-            done();
-          } else {
-            done(new Error('Service worker install failed (went redundant)'));
-          }
-        }
-      });
-    };
-
-    const sw = registration.installing || registration.waiting;
-    if (sw) {
-      trackWorker(sw);
-    }
-
-    registration.addEventListener('updatefound', () => {
-      if (registration.installing) {
-        trackWorker(registration.installing);
-      }
-    });
-  });
-}
-
-// Helper: reject if a promise doesn't resolve within `ms` milliseconds
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(message)), ms);
-    promise.then(
-      (val) => { clearTimeout(timer); resolve(val); },
-      (err) => { clearTimeout(timer); reject(err); },
-    );
-  });
-}
-
-// Helper function to convert VAPID key
-function urlBase64ToUint8Array(base64String: string): ArrayBuffer {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const rawData = window.atob(base64);
-  const outputArray = new Uint8Array(rawData.length);
-  for (let i = 0; i < rawData.length; ++i) {
-    outputArray[i] = rawData.charCodeAt(i);
-  }
-  return outputArray.buffer;
 }

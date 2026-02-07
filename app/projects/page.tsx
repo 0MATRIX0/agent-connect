@@ -2,6 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { Play, Trash2, FolderOpen } from 'lucide-react';
+import GlassCard from '../components/ui/GlassCard';
+import IconButton from '../components/ui/IconButton';
 
 interface Project {
   id: string;
@@ -30,7 +33,7 @@ export default function ProjectsPage() {
       if (!res.ok) throw new Error('API error');
       const data = await res.json();
       setProjects(Array.isArray(data) ? data : []);
-    } catch (err) {
+    } catch {
       setError('Failed to load projects');
     } finally {
       setLoading(false);
@@ -59,7 +62,7 @@ export default function ProjectsPage() {
       setName('');
       setProjectPath('');
       fetchProjects();
-    } catch (err) {
+    } catch {
       setError('Failed to add project');
     } finally {
       setSubmitting(false);
@@ -109,12 +112,12 @@ export default function ProjectsPage() {
   }
 
   return (
-    <main className="container mx-auto px-4 py-8 max-w-4xl">
-      <h1 className="text-2xl font-bold mb-6">Projects</h1>
+    <main className="px-4 sm:px-6 lg:px-8 py-8 max-w-4xl mx-auto">
+      <h1 className="text-2xl font-bold mb-6 text-white">Manage Projects</h1>
 
       {/* Add Project Form */}
-      <div className="bg-gray-800 rounded-lg p-6 mb-6">
-        <h2 className="text-lg font-semibold mb-4">Add Project</h2>
+      <GlassCard className="p-6 mb-6">
+        <h2 className="text-lg font-semibold mb-4 text-white">Add Project</h2>
         <form onSubmit={handleAdd} className="flex flex-col sm:flex-row gap-3">
           <input
             type="text"
@@ -122,7 +125,7 @@ export default function ProjectsPage() {
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
-            className="bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 flex-1"
+            className="glass-input flex-1"
           />
           <input
             type="text"
@@ -130,60 +133,63 @@ export default function ProjectsPage() {
             value={projectPath}
             onChange={(e) => setProjectPath(e.target.value)}
             required
-            className="bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 flex-[2]"
+            className="glass-input flex-[2]"
           />
           <button
             type="submit"
             disabled={submitting}
-            className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:opacity-50 px-6 py-2 rounded-lg font-medium transition-colors whitespace-nowrap"
+            className="px-6 py-2 rounded-lg font-medium transition-all whitespace-nowrap bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
           >
             {submitting ? 'Adding...' : 'Add Project'}
           </button>
         </form>
 
         {error && (
-          <p className="mt-3 text-sm text-red-400 bg-red-900/30 rounded px-3 py-2">
+          <p className="mt-3 text-sm text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">
             {error}
           </p>
         )}
-      </div>
+      </GlassCard>
 
       {/* Project List */}
       {loading ? (
-        <p className="text-gray-400">Loading projects...</p>
+        <p className="text-gray-500">Loading projects...</p>
       ) : projects.length === 0 ? (
-        <div className="bg-gray-800 rounded-lg p-8 text-center text-gray-400">
-          <p className="text-lg mb-2">No projects yet</p>
-          <p className="text-sm">Add a project above to get started with Claude Code sessions.</p>
-        </div>
+        <GlassCard className="p-8 text-center">
+          <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center mx-auto mb-3">
+            <FolderOpen className="w-6 h-6 text-gray-500" />
+          </div>
+          <p className="text-gray-400 mb-1">No projects yet</p>
+          <p className="text-gray-600 text-sm">Add a project above to get started with Claude Code sessions.</p>
+        </GlassCard>
       ) : (
         <div className="space-y-3">
           {projects.map((project) => (
-            <div key={project.id} className="bg-gray-800 rounded-lg p-4 flex items-center justify-between gap-4">
+            <GlassCard key={project.id} hover className="p-4 flex items-center justify-between gap-4">
               <div className="min-w-0 flex-1">
                 <h3 className="font-semibold text-white truncate">{project.name}</h3>
-                <p className="text-sm text-gray-400 truncate font-mono">{project.path}</p>
-                <p className="text-xs text-gray-500 mt-1">
+                <p className="text-sm text-gray-500 truncate font-mono">{project.path}</p>
+                <p className="text-xs text-gray-600 mt-1">
                   Added {new Date(project.createdAt).toLocaleDateString()}
                 </p>
               </div>
-              <div className="flex gap-2 flex-shrink-0">
+              <div className="flex gap-2 flex-shrink-0 items-center">
                 <button
                   onClick={() => handleLaunchSession(project)}
                   disabled={launching === project.id}
-                  className="bg-green-600 hover:bg-green-700 disabled:opacity-50 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
                 >
-                  {launching === project.id ? 'Launching...' : 'Launch Session'}
+                  <Play className="w-3.5 h-3.5" />
+                  {launching === project.id ? 'Launching...' : 'Launch'}
                 </button>
-                <button
+                <IconButton
+                  icon={Trash2}
+                  label="Delete project"
+                  variant="danger"
                   onClick={() => handleDelete(project.id)}
-                  className="bg-gray-700 hover:bg-red-600 px-3 py-2 rounded-lg text-sm transition-colors"
-                  title="Remove project"
-                >
-                  Delete
-                </button>
+                />
               </div>
-            </div>
+            </GlassCard>
           ))}
         </div>
       )}

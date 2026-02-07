@@ -58,10 +58,13 @@
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-search": "^0.16.0",
     "@xterm/xterm": "^6.0.0",
     "boxen": "^5.1.2",
     "chalk": "^4.1.2",
+    "framer-motion": "^12.33.0",
     "gradient-string": "^2.0.2",
+    "lucide-react": "^0.563.0",
     "next": "14.2.3",
     "next-pwa": "^5.6.0",
     "node-pty": "^1.1.0",
