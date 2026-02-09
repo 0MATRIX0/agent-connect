@@ -23,6 +23,12 @@ async function proxyRequest(request: NextRequest, pathSegments: string[]) {
     if (key !== 'host') headers[key] = value;
   });
 
+  // Add auth token if configured
+  const apiToken = process.env.API_TOKEN;
+  if (apiToken) {
+    headers['Authorization'] = `Bearer ${apiToken}`;
+  }
+
   const body = request.method !== 'GET' && request.method !== 'HEAD'
     ? await request.text()
     : undefined;

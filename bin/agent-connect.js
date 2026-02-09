@@ -196,6 +196,9 @@ async function sendNotify(args) {
   const remoteUrl = `https://${config.hostname}:${config.apiPort}/api/notify`;
   const payload = JSON.stringify({ title, body, type });
   const headers = { 'Content-Type': 'application/json' };
+  if (config.apiToken) {
+    headers['Authorization'] = `Bearer ${config.apiToken}`;
+  }
 
   let lastError;
   for (const apiUrl of [localUrl, remoteUrl]) {

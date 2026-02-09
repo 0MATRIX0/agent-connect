@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getApiServer, getAuthHeaders } from '../../_helpers';
 
-const API_SERVER = process.env.API_SERVER_URL || 'http://localhost:3109';
+const API_SERVER = getApiServer();
 
 export async function DELETE(
   request: NextRequest,
@@ -9,6 +10,7 @@ export async function DELETE(
   try {
     const res = await fetch(`${API_SERVER}/api/notifications/${params.id}`, {
       method: 'DELETE',
+      headers: getAuthHeaders(),
     });
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
