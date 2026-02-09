@@ -18,11 +18,23 @@ const colorMap = {
   connecting: 'bg-amber-500 shadow-glow-amber',
 };
 
+const labelMap: Record<string, string> = {
+  running: 'Running',
+  stopped: 'Stopped',
+  error: 'Error',
+  connecting: 'Connecting',
+};
+
 const pulseStatuses = new Set(['running', 'connecting']);
 
 export default function StatusDot({ status, size = 'md' }: StatusDotProps) {
   return (
-    <span className="relative inline-flex">
+    <span
+      className="relative inline-flex"
+      role="status"
+      aria-label={labelMap[status]}
+      title={labelMap[status]}
+    >
       <span
         className={`
           ${sizeMap[size]} rounded-full ${colorMap[status]}

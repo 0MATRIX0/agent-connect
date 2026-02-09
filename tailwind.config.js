@@ -51,6 +51,14 @@ module.exports = {
           from: { opacity: '0', transform: 'scale(0.95)' },
           to: { opacity: '1', transform: 'scale(1)' },
         },
+        'pulse-fast': {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0.4' },
+        },
+        'pulse-slow': {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0.6' },
+        },
       },
       animation: {
         'drawer-slide-in': 'drawer-slide-in 0.3s ease-out',
@@ -58,6 +66,8 @@ module.exports = {
         'glow-pulse': 'glow-pulse 2s ease-in-out infinite',
         'fade-in': 'fade-in 0.2s ease-out',
         'scale-in': 'scale-in 0.2s ease-out',
+        'pulse-fast': 'pulse-fast 1.5s ease-in-out infinite',
+        'pulse-slow': 'pulse-slow 3s ease-in-out infinite',
       },
     },
   },
