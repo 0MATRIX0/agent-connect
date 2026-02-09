@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Trash2 } from 'lucide-react';
 import Drawer from '../ui/Drawer';
+import { useToast } from '../ui/Toast';
 
 interface StoredNotification {
   id: string;
@@ -41,6 +42,7 @@ function relativeTime(timestamp: string): string {
 }
 
 export default function NotificationDrawer({ open, onClose, onCountChange }: NotificationDrawerProps) {
+  const { toast } = useToast();
   const [notifications, setNotifications] = useState<StoredNotification[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -54,11 +56,11 @@ export default function NotificationDrawer({ open, onClose, onCountChange }: Not
         onCountChange?.(items.length);
       }
     } catch {
-      // ignore
+      toast('Failed to load notifications');
     } finally {
       setLoading(false);
     }
-  }, [onCountChange]);
+  }, [onCountChange, toast]);
 
   useEffect(() => {
     fetchNotifications();
@@ -85,7 +87,7 @@ export default function NotificationDrawer({ open, onClose, onCountChange }: Not
         });
       }
     } catch {
-      // ignore
+      toast('Failed to delete notification');
     }
   }
 
@@ -97,7 +99,7 @@ export default function NotificationDrawer({ open, onClose, onCountChange }: Not
         onCountChange?.(0);
       }
     } catch {
-      // ignore
+      toast('Failed to clear notifications');
     }
   }
 

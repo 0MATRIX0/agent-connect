@@ -32,6 +32,7 @@ export default function Sidebar({ onNotificationsClick, notificationCount = 0 }:
 
   function isActive(href: string) {
     if (href === '/') return pathname === '/';
+    if (href === '/sessions' && pathname.startsWith('/terminal/')) return true;
     return pathname.startsWith(href);
   }
 
