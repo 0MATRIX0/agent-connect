@@ -3,12 +3,13 @@ import { getApiServer, getAuthHeaders } from '../../../_helpers';
 
 const API_SERVER = getApiServer();
 
-export async function GET(
+export async function POST(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
-    const res = await fetch(`${API_SERVER}/api/sessions/${params.id}/stats`, {
+    const res = await fetch(`${API_SERVER}/api/sessions/${params.id}/restore`, {
+      method: 'POST',
       headers: getAuthHeaders(),
     });
     const data = await res.json();

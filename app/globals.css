@@ -62,6 +62,21 @@ body {
   scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
 }
 
+@layer utilities {
+  .focus-ring {
+    @apply focus-visible:ring-1 focus-visible:ring-white/20 focus-visible:outline-none;
+  }
+
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 /* Safe area for mobile bottom nav */
 @supports (padding-bottom: env(safe-area-inset-bottom)) {
   .pb-safe {

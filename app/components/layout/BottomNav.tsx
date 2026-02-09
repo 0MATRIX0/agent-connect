@@ -31,6 +31,7 @@ export default function BottomNav({ onNotificationsClick, notificationCount = 0 
   function isActive(href: string) {
     if (href.startsWith('#')) return false;
     if (href === '/') return pathname === '/';
+    if (href === '/sessions' && pathname.startsWith('/terminal/')) return true;
     return pathname.startsWith(href);
   }
 

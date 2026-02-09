@@ -41,6 +41,60 @@ ${END_MARKER}
 `;
 }
 
+function getSettingsJsonPath() {
+    return path.join(getClaudeConfigDir(), 'settings.json');
+}
+
+const STOP_HOOK_COMMAND = 'agent-connect notify "Claude is waiting for input" --type input_needed';
+
+function installSettingsHook() {
+    const settingsPath = getSettingsJsonPath();
+    let settings = {};
+
+    // Read existing settings.json if it exists
+    if (fs.existsSync(settingsPath)) {
+        try {
+            settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+        } catch {
+            // If JSON is corrupt, start fresh but log a warning
+            console.warn('Warning: ~/.claude/settings.json was invalid JSON, recreating it');
+            settings = {};
+        }
+    }
+
+    // Ensure hooks object exists
+    if (!settings.hooks) {
+        settings.hooks = {};
+    }
+
+    // Build the Stop hook entry
+    const stopHookEntry = {
+        matcher: '',
+        hooks: [
+            {
+                type: 'command',
+                command: STOP_HOOK_COMMAND
+            }
+        ]
+    };
+
+    // Check if Stop hooks already contain our command
+    if (Array.isArray(settings.hooks.Stop)) {
+        const alreadyInstalled = settings.hooks.Stop.some(entry =>
+            Array.isArray(entry.hooks) &&
+            entry.hooks.some(h => h.command === STOP_HOOK_COMMAND)
+        );
+        if (!alreadyInstalled) {
+            settings.hooks.Stop.push(stopHookEntry);
+        }
+    } else {
+        settings.hooks.Stop = [stopHookEntry];
+    }
+
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+    return settingsPath;
+}
+
 function installClaudeHook() {
     const claudeDir = getClaudeConfigDir();
     const claudeMdPath = getClaudeMdPath();
@@ -51,7 +105,7 @@ function installClaudeHook() {
         fs.mkdirSync(claudeDir, { recursive: true });
     }
 
-    // Check if CLAUDE.md exists
+    // --- Install CLAUDE.md notification instructions ---
     if (fs.existsSync(claudeMdPath)) {
         const existing = fs.readFileSync(claudeMdPath, 'utf-8');
 
@@ -82,17 +136,22 @@ function installClaudeHook() {
             }
 
             fs.writeFileSync(claudeMdPath, before + block + after);
-            return { status: 'success', message: `Notification hook updated in ${claudeMdPath}` };
+        } else {
+            // No existing block — prepend
+            fs.writeFileSync(claudeMdPath, block + '\n' + existing);
         }
-
-        // No existing block — prepend
-        fs.writeFileSync(claudeMdPath, block + '\n' + existing);
     } else {
         // Create new file
         fs.writeFileSync(claudeMdPath, block);
     }
 
-    return { status: 'success', message: `Notification hook installed in ${claudeMdPath}` };
+    // --- Install Stop hook in settings.json ---
+    const settingsPath = installSettingsHook();
+
+    return {
+        status: 'success',
+        message: `Notification hook installed in ${claudeMdPath} and ${settingsPath}`
+    };
 }
 
 module.exports = { installClaudeHook, MARKER, END_MARKER };

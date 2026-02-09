@@ -58,9 +58,10 @@ app.prepare().then(() => {
       return;
     }
 
+    const apiPort = parseInt(process.env.API_PORT || '3109', 10);
     const proxyReq = http.request({
       hostname: '127.0.0.1',
-      port: 3109,
+      port: apiPort,
       path: req.url,
       method: req.method,
       headers: req.headers,

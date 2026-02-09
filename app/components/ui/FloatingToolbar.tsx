@@ -54,6 +54,8 @@ export default function FloatingToolbar({
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.9 }}
             transition={{ duration: 0.15 }}
+            role="toolbar"
+            aria-label="Session actions"
             className="flex items-center gap-1 bg-white/5 backdrop-blur-2xl border border-white/10 rounded-full px-2 py-1.5 shadow-lg"
           >
             {children}

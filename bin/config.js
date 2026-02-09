@@ -65,6 +65,8 @@ function generateEnvLocal(packageRoot) {
     `API_PORT=${apiPort}`,
     `API_HOST=127.0.0.1`,
     '',
+    `API_TOKEN=${config.apiToken || ''}`,
+    '',
   ];
 
   const envPath = path.join(packageRoot, '.env.local');

@@ -13,9 +13,13 @@ export default function CopyBlock({ value, label, variant = 'code' }: CopyBlockP
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
-    await navigator.clipboard.writeText(value);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API unavailable (non-HTTPS or denied permission)
+    }
   }
 
   return (
@@ -23,6 +27,10 @@ export default function CopyBlock({ value, label, variant = 'code' }: CopyBlockP
       <span className="text-xs text-gray-400 uppercase tracking-wider">{label}</span>
       <div
         onClick={handleCopy}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleCopy(); } }}
+        role="button"
+        tabIndex={0}
+        aria-label={`Copy ${label}`}
         className={`
           flex items-center justify-between gap-3 rounded-lg px-4 py-3 cursor-pointer
           border border-dashed transition-colors duration-300 font-mono

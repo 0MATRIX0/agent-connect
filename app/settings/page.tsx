@@ -337,14 +337,18 @@ curl -X POST ${apiUrl} \\
 
         {showAddMacro && (
           <div className="mb-4 p-3 bg-white/5 rounded-lg space-y-2">
+            <label htmlFor="macro-label" className="sr-only">Macro label</label>
             <input
+              id="macro-label"
               type="text"
               placeholder="Label (e.g. Build)"
               value={newLabel}
               onChange={e => setNewLabel(e.target.value)}
               className="glass-input w-full text-sm"
             />
+            <label htmlFor="macro-command" className="sr-only">Macro command</label>
             <input
+              id="macro-command"
               type="text"
               placeholder="Command (e.g. npm run build)"
               value={newCommand}

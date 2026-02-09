@@ -58,6 +58,7 @@ export default function Drawer({ open, onClose, side = 'right', children, title 
             transition={{ duration: 0.2 }}
             onClick={onClose}
             className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
+            aria-hidden="true"
           />
 
           {/* Drawer panel */}
@@ -68,11 +69,14 @@ export default function Drawer({ open, onClose, side = 'right', children, title 
             animate="visible"
             exit="hidden"
             transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+            role="dialog"
+            aria-modal="true"
+            aria-label={title || 'Drawer'}
             className={`
               fixed top-0 bottom-0 z-50
               ${side === 'right' ? 'right-0' : 'left-0'}
               w-full sm:w-[380px]
-              bg-void/95 backdrop-blur-2xl border-${side === 'right' ? 'l' : 'r'} border-white/10
+              bg-void/95 backdrop-blur-2xl ${side === 'right' ? 'border-l' : 'border-r'} border-white/10
               flex flex-col overflow-hidden
             `}
           >

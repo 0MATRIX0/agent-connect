@@ -1,10 +1,13 @@
 import { NextResponse } from 'next/server';
+import { getApiServer, getAuthHeaders } from '../_helpers';
 
-const API_SERVER = process.env.API_SERVER_URL || 'http://localhost:3109';
+const API_SERVER = getApiServer();
 
 export async function GET() {
   try {
-    const res = await fetch(`${API_SERVER}/api/notifications`);
+    const res = await fetch(`${API_SERVER}/api/notifications`, {
+      headers: getAuthHeaders(),
+    });
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
   } catch {
@@ -16,6 +19,7 @@ export async function DELETE() {
   try {
     const res = await fetch(`${API_SERVER}/api/notifications`, {
       method: 'DELETE',
+      headers: getAuthHeaders(),
     });
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });

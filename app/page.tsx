@@ -2,9 +2,10 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Play, MoreVertical, Trash2, Terminal, Zap, FolderPlus } from 'lucide-react';
+import { Play, MoreVertical, Trash2, Terminal, Zap, FolderPlus, RotateCcw, ChevronDown, History } from 'lucide-react';
 import GlassCard from './components/ui/GlassCard';
 import StatusDot from './components/ui/StatusDot';
+import { useToast } from './components/ui/Toast';
 
 interface Project {
   id: string;
@@ -22,6 +23,8 @@ interface Session {
   pid: number;
   startedAt: string;
   stoppedAt: string | null;
+  exitCode?: number | null;
+  signal?: string | null;
 }
 
 function formatDuration(startedAt: string, stoppedAt: string | null) {
@@ -35,19 +38,44 @@ function formatDuration(startedAt: string, stoppedAt: string | null) {
   return `${hours}h ${minutes}m`;
 }
 
+function formatDate(dateStr: string) {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diff = now.getTime() - date.getTime();
+  const dayMs = 86400000;
+
+  if (diff < dayMs) {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  if (diff < 7 * dayMs) {
+    const days = Math.floor(diff / dayMs);
+    return `${days}d ago`;
+  }
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
 export default function Dashboard() {
   const router = useRouter();
+  const { toast } = useToast();
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [historySessions, setHistorySessions] = useState<Session[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(true);
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [launching, setLaunching] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
   const [sessionOutputs, setSessionOutputs] = useState<Record<string, string[]>>({});
+  const [historyOffset, setHistoryOffset] = useState(0);
+  const [hasMoreHistory, setHasMoreHistory] = useState(true);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [restoringSession, setRestoringSession] = useState<string | null>(null);
+
+  const HISTORY_PAGE_SIZE = 10;
 
   useEffect(() => {
     fetchProjects();
     fetchSessions();
+    fetchHistory(0);
     const interval = setInterval(fetchSessions, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -88,7 +116,7 @@ export default function Dashboard() {
         setProjects(Array.isArray(data) ? data : []);
       }
     } catch {
-      // ignore
+      toast('Failed to load projects');
     } finally {
       setLoadingProjects(false);
     }
@@ -96,15 +124,36 @@ export default function Dashboard() {
 
   async function fetchSessions() {
     try {
-      const res = await fetch('/api/sessions');
+      const res = await fetch('/api/sessions?status=running');
       if (res.ok) {
         const data = await res.json();
         setSessions(Array.isArray(data) ? data : []);
       }
     } catch {
-      // ignore
+      toast('Failed to load sessions');
     } finally {
       setLoadingSessions(false);
+    }
+  }
+
+  async function fetchHistory(offset: number) {
+    setLoadingHistory(true);
+    try {
+      const res = await fetch(`/api/sessions?status=stopped&limit=${HISTORY_PAGE_SIZE}&offset=${offset}`);
+      if (res.ok) {
+        const data: Session[] = await res.json();
+        if (offset === 0) {
+          setHistorySessions(data);
+        } else {
+          setHistorySessions(prev => [...prev, ...data]);
+        }
+        setHasMoreHistory(data.length === HISTORY_PAGE_SIZE);
+        setHistoryOffset(offset + data.length);
+      }
+    } catch {
+      toast('Failed to load session history');
+    } finally {
+      setLoadingHistory(false);
     }
   }
 
@@ -121,9 +170,26 @@ export default function Dashboard() {
         router.push(`/terminal/${data.id}`);
       }
     } catch {
-      // ignore
+      toast('Failed to launch session');
     } finally {
       setLaunching(null);
+    }
+  }
+
+  async function restoreSession(sessionId: string) {
+    setRestoringSession(sessionId);
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/restore`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.newSession) {
+        router.push(`/terminal/${data.newSession.id}?restored_from=${sessionId}`);
+      } else {
+        toast(data.error || 'Failed to restore session');
+      }
+    } catch {
+      toast('Failed to restore session');
+    } finally {
+      setRestoringSession(null);
     }
   }
 
@@ -132,7 +198,7 @@ export default function Dashboard() {
       await fetch(`/api/projects/${id}`, { method: 'DELETE' });
       setProjects(prev => prev.filter(p => p.id !== id));
     } catch {
-      // ignore
+      toast('Failed to delete project');
     }
     setMenuOpen(null);
   }
@@ -162,7 +228,7 @@ export default function Dashboard() {
         </GlassCard>
         <GlassCard className="p-4 col-span-2 sm:col-span-1">
           <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Total Sessions</p>
-          <p className="text-2xl font-bold text-white">{sessions.length}</p>
+          <p className="text-2xl font-bold text-white">{runningSessions.length + historySessions.length}</p>
         </GlassCard>
       </div>
 
@@ -246,18 +312,21 @@ export default function Dashboard() {
                       e.stopPropagation();
                       setMenuOpen(menuOpen === project.id ? null : project.id);
                     }}
-                    className="p-1 rounded text-gray-600 hover:text-white hover:bg-white/10 transition-colors opacity-0 group-hover:opacity-100"
+                    aria-label="Project menu"
+                    aria-expanded={menuOpen === project.id}
+                    className="p-1 rounded text-gray-600 hover:text-white hover:bg-white/10 transition-colors opacity-0 group-hover:opacity-100 focus-visible:opacity-100 focus-ring"
                   >
                     <MoreVertical className="w-4 h-4" />
                   </button>
 
                   {menuOpen === project.id && (
-                    <div className="absolute right-0 top-8 w-36 bg-void border border-white/10 rounded-lg shadow-xl z-10 overflow-hidden animate-scale-in">
+                    <div className="absolute right-0 top-8 w-36 bg-void border border-white/10 rounded-lg shadow-xl z-10 overflow-hidden animate-scale-in" role="menu">
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           deleteProject(project.id);
                         }}
+                        role="menuitem"
                         className="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-400 hover:text-rose-400 hover:bg-white/5 transition-colors"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -267,7 +336,13 @@ export default function Dashboard() {
                   )}
                 </div>
 
-                <div onClick={() => launchSession(project)} className="cursor-pointer">
+                <div
+                  onClick={() => launchSession(project)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); launchSession(project); } }}
+                  role="button"
+                  tabIndex={0}
+                  className="cursor-pointer"
+                >
                   <h3 className="font-semibold text-white mb-1 pr-6">{project.name}</h3>
                   <p className="text-xs text-gray-500 font-mono truncate mb-3">{project.path}</p>
                   <div className="flex items-center justify-between">
@@ -298,36 +373,81 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Stopped Sessions */}
-      {sessions.filter(s => s.status === 'stopped').length > 0 && (
-        <div>
-          <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <Terminal className="w-4 h-4 text-gray-500" />
-            Recent Sessions
-          </h2>
+      {/* Session History */}
+      <div>
+        <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+          <History className="w-4 h-4 text-gray-500" />
+          Session History
+        </h2>
+
+        {historySessions.length === 0 && !loadingHistory ? (
+          <GlassCard className="p-6 text-center">
+            <p className="text-gray-500 text-sm">No session history yet. Sessions will appear here after they stop.</p>
+          </GlassCard>
+        ) : (
           <div className="space-y-2">
-            {sessions.filter(s => s.status === 'stopped').slice(0, 5).map(session => (
+            {historySessions.map(session => (
               <GlassCard
                 key={session.id}
                 hover
-                onClick={() => router.push(`/terminal/${session.id}`)}
                 className="p-4 flex items-center justify-between"
               >
-                <div className="flex items-center gap-3 min-w-0">
+                <div
+                  className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer"
+                  onClick={() => router.push(`/terminal/${session.id}`)}
+                >
                   <StatusDot status="stopped" size="sm" />
                   <div className="min-w-0">
                     <span className="text-sm text-white font-medium truncate block">{session.projectName}</span>
-                    <span className="text-xs text-gray-500">
-                      {formatDuration(session.startedAt, session.stoppedAt)}
-                    </span>
+                    <div className="flex items-center gap-2 text-xs text-gray-500">
+                      <span>{formatDate(session.startedAt)}</span>
+                      <span className="text-gray-700">·</span>
+                      <span>{formatDuration(session.startedAt, session.stoppedAt)}</span>
+                    </div>
                   </div>
                 </div>
-                <span className="text-xs text-gray-600 flex-shrink-0">View Output</span>
+                <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      restoreSession(session.id);
+                    }}
+                    disabled={restoringSession === session.id}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white/5 text-gray-400 hover:bg-emerald-500/10 hover:text-emerald-400 transition-colors disabled:opacity-50"
+                  >
+                    <RotateCcw className={`w-3 h-3 ${restoringSession === session.id ? 'animate-spin' : ''}`} />
+                    {restoringSession === session.id ? 'Restoring...' : 'Restore'}
+                  </button>
+                  <button
+                    onClick={() => router.push(`/terminal/${session.id}`)}
+                    className="text-xs text-gray-600 hover:text-gray-400 transition-colors px-2 py-1.5"
+                  >
+                    View
+                  </button>
+                </div>
               </GlassCard>
             ))}
+
+            {/* Load More */}
+            {hasMoreHistory && (
+              <button
+                onClick={() => fetchHistory(historyOffset)}
+                disabled={loadingHistory}
+                className="w-full py-3 text-sm text-gray-500 hover:text-gray-300 transition-colors flex items-center justify-center gap-2"
+              >
+                {loadingHistory ? (
+                  <span className="animate-pulse">Loading...</span>
+                ) : (
+                  <>
+                    <ChevronDown className="w-4 h-4" />
+                    Load More
+                  </>
+                )}
+              </button>
+            )}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </main>
   );
 }

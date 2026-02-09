@@ -122,6 +122,7 @@ async function runSetup() {
 
   // Step 6: Generate VAPID keys
   print('  Generating VAPID keys...');
+  const crypto = require('crypto');
   const webpush = require('web-push');
   const vapidKeys = webpush.generateVAPIDKeys();
 
@@ -168,6 +169,10 @@ async function runSetup() {
     }
   }
 
+  // Generate API token
+  const apiToken = crypto.randomBytes(32).toString('hex');
+  print('  API token generated.');
+
   // Step 9: Save config
   const config = {
     vapidPublicKey: vapidKeys.publicKey,
@@ -176,6 +181,7 @@ async function runSetup() {
     hostname,
     apiPort,
     frontendPort,
+    apiToken,
     setupDate: new Date().toISOString(),
   };
 

@@ -103,7 +103,7 @@ export default function ProjectsPage() {
         return;
       }
 
-      router.push(`/terminal/${data.id}`);
+      router.push(`/sessions?new=${data.id}`);
     } catch {
       setError('Failed to launch session');
     } finally {
@@ -119,7 +119,9 @@ export default function ProjectsPage() {
       <GlassCard className="p-6 mb-6">
         <h2 className="text-lg font-semibold mb-4 text-white">Add Project</h2>
         <form onSubmit={handleAdd} className="flex flex-col sm:flex-row gap-3">
+          <label htmlFor="project-name" className="sr-only">Project name</label>
           <input
+            id="project-name"
             type="text"
             placeholder="Project name"
             value={name}
@@ -127,7 +129,9 @@ export default function ProjectsPage() {
             required
             className="glass-input flex-1"
           />
+          <label htmlFor="project-path" className="sr-only">Project path</label>
           <input
+            id="project-path"
             type="text"
             placeholder="/home/user/projects/my-project"
             value={projectPath}
