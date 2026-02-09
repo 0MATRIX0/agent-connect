@@ -15,6 +15,8 @@ const projects = require('./lib/server/projects');
 const sessionManager = require('./lib/server/sessions');
 const notifications = require('./lib/server/notifications');
 
+const crypto = require('crypto');
+
 const PORT = process.env.API_PORT || 3109;
 const DATA_DIR = process.env.AGENT_CONNECT_DATA_DIR || path.join(os.homedir(), '.agent-connect', 'data');
 const SUBSCRIPTIONS_FILE = path.join(DATA_DIR, 'subscriptions.json');
@@ -73,6 +75,76 @@ function loadConfig() {
 
 loadConfig();
 
+// Load API token from config
+let apiToken = process.env.API_TOKEN || '';
+if (!apiToken) {
+    try {
+        const configPath = path.join(os.homedir(), '.agent-connect', 'config.json');
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        if (config.apiToken) apiToken = config.apiToken;
+    } catch {}
+}
+
+// Authentication
+function authenticateRequest(req) {
+    if (!apiToken) return true; // No token configured, skip auth
+    const authHeader = req.headers['authorization'];
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.slice(7);
+        return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(apiToken));
+    }
+    const url = new URL(req.url, `http://localhost:${PORT}`);
+    const queryToken = url.searchParams.get('token');
+    if (queryToken) {
+        try {
+            return crypto.timingSafeEqual(Buffer.from(queryToken), Buffer.from(apiToken));
+        } catch {
+            return false;
+        }
+    }
+    return false;
+}
+
+// Rate limiter (in-memory)
+const rateLimits = new Map(); // IP -> { count, resetTime }
+function checkRateLimit(ip, maxRequests, windowMs = 60000) {
+    const now = Date.now();
+    const entry = rateLimits.get(ip);
+    if (!entry || now > entry.resetTime) {
+        rateLimits.set(ip, { count: 1, resetTime: now + windowMs });
+        return true;
+    }
+    entry.count++;
+    return entry.count <= maxRequests;
+}
+
+// Clean up rate limits periodically
+setInterval(() => {
+    const now = Date.now();
+    for (const [ip, entry] of rateLimits) {
+        if (now > entry.resetTime) rateLimits.delete(ip);
+    }
+}, 60000);
+
+// CORS allowed origins
+function getAllowedOrigins() {
+    const origins = ['http://localhost:3110', 'http://127.0.0.1:3110'];
+    const hostname = process.env.APP_HOSTNAME;
+    if (hostname) {
+        origins.push(`https://${hostname}`);
+        origins.push(`https://${hostname}:3110`);
+    }
+    return origins;
+}
+
+function getCorsOrigin(req) {
+    if (!apiToken) return '*'; // No auth configured, allow all (backward compat)
+    const origin = req.headers['origin'];
+    const allowed = getAllowedOrigins();
+    if (origin && allowed.includes(origin)) return origin;
+    return allowed[0]; // Default to first allowed origin
+}
+
 // Configure web-push
 const publicKey = process.env.VAPID_PUBLIC_KEY || process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
 const privateKey = process.env.VAPID_PRIVATE_KEY;
@@ -110,11 +182,21 @@ function saveSubscriptions(subscriptions) {
     fs.writeFileSync(SUBSCRIPTIONS_FILE, JSON.stringify(subscriptions, null, 2));
 }
 
-// Parse JSON body
+// Parse JSON body (max 100KB)
+const MAX_BODY_SIZE = 100 * 1024;
 async function parseBody(req) {
     return new Promise((resolve, reject) => {
         let body = '';
-        req.on('data', chunk => body += chunk);
+        let size = 0;
+        req.on('data', chunk => {
+            size += chunk.length;
+            if (size > MAX_BODY_SIZE) {
+                req.destroy();
+                reject(new Error('Request body too large'));
+                return;
+            }
+            body += chunk;
+        });
         req.on('end', () => {
             try {
                 resolve(body ? JSON.parse(body) : {});
@@ -127,12 +209,13 @@ async function parseBody(req) {
 }
 
 // Send JSON response
-function sendJson(res, status, data) {
+function sendJson(res, status, data, req) {
+    const corsOrigin = req ? getCorsOrigin(req) : '*';
     res.writeHead(status, {
         'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Origin': corsOrigin,
         'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     });
     res.end(JSON.stringify(data));
 }
@@ -144,22 +227,41 @@ async function handleRequest(req, res) {
 
     // Handle CORS preflight
     if (req.method === 'OPTIONS') {
+        const corsOrigin = getCorsOrigin(req);
         res.writeHead(204, {
-            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Origin': corsOrigin,
             'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization',
         });
         res.end();
         return;
     }
 
+    // Auth: skip for health endpoint
+    if (pathname !== '/api/health' && pathname !== '/health') {
+        if (!authenticateRequest(req)) {
+            return sendJson(res, 401, { error: 'Unauthorized' }, req);
+        }
+    }
+
+    // Rate limiting
+    const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+
     try {
         // Subscribe endpoint
         if (pathname === '/api/subscribe' && req.method === 'POST') {
+            if (!checkRateLimit(clientIp, 10)) {
+                return sendJson(res, 429, { error: 'Too many requests' }, req);
+            }
             const subscription = await parseBody(req);
 
             if (!subscription.endpoint || !subscription.keys?.p256dh || !subscription.keys?.auth) {
-                return sendJson(res, 400, { error: 'Invalid subscription object' });
+                return sendJson(res, 400, { error: 'Invalid subscription object' }, req);
+            }
+
+            // Validate endpoint is a valid URL
+            try { new URL(subscription.endpoint); } catch {
+                return sendJson(res, 400, { error: 'Invalid subscription endpoint URL' }, req);
             }
 
             const subscriptions = getSubscriptions();
@@ -170,7 +272,7 @@ async function handleRequest(req, res) {
                 saveSubscriptions(subscriptions);
             }
 
-            return sendJson(res, 200, { success: true, message: 'Subscribed successfully' });
+            return sendJson(res, 200, { success: true, message: 'Subscribed successfully' }, req);
         }
 
         // Unsubscribe endpoint
@@ -178,7 +280,7 @@ async function handleRequest(req, res) {
             const { endpoint } = await parseBody(req);
 
             if (!endpoint) {
-                return sendJson(res, 400, { error: 'Endpoint is required' });
+                return sendJson(res, 400, { error: 'Endpoint is required' }, req);
             }
 
             const subscriptions = getSubscriptions();
@@ -186,14 +288,18 @@ async function handleRequest(req, res) {
 
             if (filtered.length !== subscriptions.length) {
                 saveSubscriptions(filtered);
-                return sendJson(res, 200, { success: true, message: 'Unsubscribed successfully' });
+                return sendJson(res, 200, { success: true, message: 'Unsubscribed successfully' }, req);
             }
 
-            return sendJson(res, 404, { error: 'Subscription not found' });
+            return sendJson(res, 404, { error: 'Subscription not found' }, req);
         }
 
         // Notify endpoint
         if (pathname === '/api/notify' && (req.method === 'POST' || req.method === 'GET')) {
+            if (!checkRateLimit(clientIp, 30)) {
+                return sendJson(res, 429, { error: 'Too many requests' }, req);
+            }
+
             let payload;
 
             if (req.method === 'GET') {
@@ -207,14 +313,18 @@ async function handleRequest(req, res) {
             }
 
             if (!payload.title || !payload.body) {
-                return sendJson(res, 400, { error: 'Title and body are required' });
+                return sendJson(res, 400, { error: 'Title and body are required' }, req);
             }
+
+            // Validate notification type
+            const knownTypes = ['completed', 'task_done', 'planning_complete', 'approval_needed', 'input_needed', 'command_execution', 'error'];
+            const notifType = knownTypes.includes(payload.type) ? payload.type : 'completed';
 
             // Persist notification before sending push
             notifications.addNotification({
                 title: payload.title,
                 body: payload.body,
-                type: payload.type || 'completed',
+                type: notifType,
                 icon: payload.icon,
                 data: payload.data,
             });
@@ -222,7 +332,7 @@ async function handleRequest(req, res) {
             const subscriptions = getSubscriptions();
 
             if (subscriptions.length === 0) {
-                return sendJson(res, 200, { success: true, message: 'No subscriptions to notify', sent: 0 });
+                return sendJson(res, 200, { success: true, message: 'No subscriptions to notify', sent: 0 }, req);
             }
 
             const invalidEndpoints = [];
@@ -232,7 +342,7 @@ async function handleRequest(req, res) {
                 title: payload.title,
                 body: payload.body,
                 icon: payload.icon || '/icon-192.png',
-                type: payload.type || 'completed',
+                type: notifType,
                 data: payload.data || {},
             });
 
@@ -293,19 +403,19 @@ async function handleRequest(req, res) {
                 message: `Notification sent to ${sentCount} subscriber(s)`,
                 sent: sentCount,
                 cleaned: invalidEndpoints.length,
-            });
+            }, req);
         }
 
         // Health check
         if (pathname === '/api/health' || pathname === '/health') {
-            return sendJson(res, 200, { status: 'ok', subscriptions: getSubscriptions().length });
+            return sendJson(res, 200, { status: 'ok', subscriptions: getSubscriptions().length }, req);
         }
 
         // --- Project endpoints ---
 
         // List all projects
         if (pathname === '/api/projects' && req.method === 'GET') {
-            return sendJson(res, 200, projects.getProjects());
+            return sendJson(res, 200, projects.getProjects(), req);
         }
 
         // Add a project
@@ -313,9 +423,9 @@ async function handleRequest(req, res) {
             const { name, path: projectPath } = await parseBody(req);
             try {
                 const project = projects.addProject(name, projectPath);
-                return sendJson(res, 201, project);
+                return sendJson(res, 201, project, req);
             } catch (error) {
-                return sendJson(res, 400, { error: error.message });
+                return sendJson(res, 400, { error: error.message }, req);
             }
         }
 
@@ -324,32 +434,38 @@ async function handleRequest(req, res) {
         if (projectMatch && req.method === 'DELETE') {
             try {
                 const removed = projects.removeProject(projectMatch[1]);
-                return sendJson(res, 200, { success: true, project: removed });
+                return sendJson(res, 200, { success: true, project: removed }, req);
             } catch (error) {
-                return sendJson(res, 404, { error: error.message });
+                return sendJson(res, 404, { error: error.message }, req);
             }
         }
 
         // --- Session endpoints ---
 
-        // List sessions (optional ?projectId= filter)
+        // List sessions (optional ?projectId=, ?status=, ?limit=, ?offset= filters)
         if (pathname === '/api/sessions' && req.method === 'GET') {
             const projectId = url.searchParams.get('projectId') || undefined;
-            return sendJson(res, 200, sessionManager.getAllSessions(projectId));
+            const status = url.searchParams.get('status') || undefined;
+            const limit = url.searchParams.get('limit') ? parseInt(url.searchParams.get('limit')) : undefined;
+            const offset = url.searchParams.get('offset') ? parseInt(url.searchParams.get('offset')) : undefined;
+            return sendJson(res, 200, sessionManager.getAllSessions({ projectId, status, limit, offset }), req);
         }
 
         // Launch a session
         if (pathname === '/api/sessions' && req.method === 'POST') {
             const { projectId } = await parseBody(req);
+            if (!projectId || typeof projectId !== 'string') {
+                return sendJson(res, 400, { error: 'projectId is required and must be a string' }, req);
+            }
             const project = projects.getProject(projectId);
             if (!project) {
-                return sendJson(res, 404, { error: 'Project not found' });
+                return sendJson(res, 404, { error: 'Project not found' }, req);
             }
             try {
                 const session = sessionManager.createSession(project.id, project.name, project.path);
-                return sendJson(res, 201, session);
+                return sendJson(res, 201, session, req);
             } catch (error) {
-                return sendJson(res, 500, { error: error.message });
+                return sendJson(res, 500, { error: error.message }, req);
             }
         }
 
@@ -358,9 +474,9 @@ async function handleRequest(req, res) {
         if (sessionGetMatch && req.method === 'GET') {
             const session = sessionManager.getSession(sessionGetMatch[1]);
             if (!session) {
-                return sendJson(res, 404, { error: 'Session not found' });
+                return sendJson(res, 404, { error: 'Session not found' }, req);
             }
-            return sendJson(res, 200, session);
+            return sendJson(res, 200, session, req);
         }
 
         // Get session stats (PID, RSS, CPU)
@@ -368,7 +484,7 @@ async function handleRequest(req, res) {
         if (sessionStatsMatch && req.method === 'GET') {
             const session = sessionManager.getRawSession(sessionStatsMatch[1]);
             if (!session || session.status !== 'running') {
-                return sendJson(res, 404, { error: 'Session not found or not running' });
+                return sendJson(res, 404, { error: 'Session not found or not running' }, req);
             }
             try {
                 const pid = session.pid;
@@ -388,28 +504,42 @@ async function handleRequest(req, res) {
                     // /proc not available (non-Linux)
                 }
                 const uptime = Math.floor((Date.now() - new Date(session.startedAt).getTime()) / 1000);
-                return sendJson(res, 200, { pid, rss, cpu, uptime });
+                return sendJson(res, 200, { pid, rss, cpu, uptime }, req);
             } catch (error) {
-                return sendJson(res, 500, { error: error.message });
+                return sendJson(res, 500, { error: error.message }, req);
             }
         }
 
-        // Get session output (last N lines)
+        // Get session output (last N lines, or full scrollback with ?full=true)
         const sessionOutputMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/output$/);
         if (sessionOutputMatch && req.method === 'GET') {
-            const session = sessionManager.getRawSession(sessionOutputMatch[1]);
-            if (!session) {
-                return sendJson(res, 404, { error: 'Session not found' });
+            const sessionId = sessionOutputMatch[1];
+            const full = url.searchParams.get('full') === 'true';
+
+            // Try in-memory first, then DB
+            const rawSession = sessionManager.getRawSession(sessionId);
+            let allText;
+            if (rawSession) {
+                allText = (rawSession.scrollback || []).join('');
+            } else {
+                // Fallback to DB for historical sessions
+                allText = sessionManager.getSessionScrollback(sessionId);
+                if (!allText && allText !== '') {
+                    return sendJson(res, 404, { error: 'Session not found' }, req);
+                }
             }
+
+            // Return full raw scrollback (for terminal replay)
+            if (full) {
+                return sendJson(res, 200, { scrollback: allText }, req);
+            }
+
+            // Strip ANSI escape codes for clean line output
             const lineCount = parseInt(url.searchParams.get('lines') || '5');
-            const scrollback = session.scrollback || [];
-            // Join all scrollback, split by newlines, take last N
-            const allText = scrollback.join('');
-            // Strip ANSI escape codes for cleaner output
             const cleanText = allText.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
             const allLines = cleanText.split('\n').filter(l => l.trim().length > 0);
             const lastLines = allLines.slice(-lineCount);
-            return sendJson(res, 200, { lines: lastLines });
+            return sendJson(res, 200, { lines: lastLines }, req);
         }
 
         // Kill a session
@@ -417,9 +547,33 @@ async function handleRequest(req, res) {
         if (sessionDeleteMatch && req.method === 'DELETE') {
             try {
                 const session = sessionManager.killSession(sessionDeleteMatch[1]);
-                return sendJson(res, 200, { success: true, session });
+                return sendJson(res, 200, { success: true, session }, req);
             } catch (error) {
-                return sendJson(res, 404, { error: error.message });
+                return sendJson(res, 404, { error: error.message }, req);
+            }
+        }
+
+        // Restore a session (create new session in same project)
+        const sessionRestoreMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/restore$/);
+        if (sessionRestoreMatch && req.method === 'POST') {
+            const oldSessionId = sessionRestoreMatch[1];
+            const oldSession = sessionManager.getSession(oldSessionId);
+            if (!oldSession) {
+                return sendJson(res, 404, { error: 'Session not found' }, req);
+            }
+            // Verify the project still exists
+            const project = projects.getProject(oldSession.projectId);
+            if (!project) {
+                return sendJson(res, 404, { error: 'Original project no longer exists' }, req);
+            }
+            try {
+                const newSession = sessionManager.createSession(project.id, project.name, project.path);
+                return sendJson(res, 201, {
+                    newSession,
+                    oldSessionId,
+                }, req);
+            } catch (error) {
+                return sendJson(res, 500, { error: error.message }, req);
             }
         }
 
@@ -427,13 +581,13 @@ async function handleRequest(req, res) {
 
         // List notifications
         if (pathname === '/api/notifications' && req.method === 'GET') {
-            return sendJson(res, 200, notifications.getNotifications());
+            return sendJson(res, 200, notifications.getNotifications(), req);
         }
 
         // Clear all notifications
         if (pathname === '/api/notifications' && req.method === 'DELETE') {
             notifications.clearNotifications();
-            return sendJson(res, 200, { success: true, message: 'All notifications cleared' });
+            return sendJson(res, 200, { success: true, message: 'All notifications cleared' }, req);
         }
 
         // Delete a single notification
@@ -441,18 +595,18 @@ async function handleRequest(req, res) {
         if (notificationMatch && req.method === 'DELETE') {
             try {
                 const removed = notifications.deleteNotification(notificationMatch[1]);
-                return sendJson(res, 200, { success: true, notification: removed });
+                return sendJson(res, 200, { success: true, notification: removed }, req);
             } catch (error) {
-                return sendJson(res, 404, { error: error.message });
+                return sendJson(res, 404, { error: error.message }, req);
             }
         }
 
         // 404
-        sendJson(res, 404, { error: 'Not found' });
+        sendJson(res, 404, { error: 'Not found' }, req);
 
     } catch (error) {
         console.error('Request error:', error);
-        sendJson(res, 500, { error: error.message || 'Internal server error' });
+        sendJson(res, 500, { error: error.message || 'Internal server error' }, req);
     }
 }
 
@@ -481,10 +635,14 @@ if (useHttps) {
     protocol = 'http';
 }
 
+// Initialize session persistence (DB + recovery)
+sessionManager.initSessions();
+sessionManager.purgeOldSessions(30);
+
 const displayHost = process.env.APP_HOSTNAME || HOST;
 
 // WebSocket server for terminal sessions (noServer mode — shares HTTP server)
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 
 server.on('upgrade', (request, socket, head) => {
     const url = new URL(request.url, `http://localhost:${PORT}`);
@@ -493,6 +651,27 @@ server.on('upgrade', (request, socket, head) => {
     if (!wsMatch) {
         socket.destroy();
         return;
+    }
+
+    // Authenticate WebSocket upgrade
+    if (apiToken) {
+        const queryToken = url.searchParams.get('token');
+        if (!queryToken) {
+            socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+            socket.destroy();
+            return;
+        }
+        try {
+            if (!crypto.timingSafeEqual(Buffer.from(queryToken), Buffer.from(apiToken))) {
+                socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+                socket.destroy();
+                return;
+            }
+        } catch {
+            socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+            socket.destroy();
+            return;
+        }
     }
 
     const sessionId = wsMatch[1];
@@ -507,6 +686,10 @@ server.on('upgrade', (request, socket, head) => {
         // Attach client to session
         sessionManager.attachClient(sessionId, ws);
 
+        // Ping/pong keepalive
+        ws.isAlive = true;
+        ws.on('pong', () => { ws.isAlive = true; });
+
         // Forward client input to PTY
         ws.on('message', (message) => {
             try {
@@ -515,6 +698,10 @@ server.on('upgrade', (request, socket, head) => {
                     sessionManager.writeToSession(sessionId, parsed.data);
                 } else if (parsed.type === 'resize') {
                     sessionManager.resizeSession(sessionId, parsed.cols, parsed.rows);
+                } else if (parsed.type === 'ping') {
+                    if (ws.readyState === 1) {
+                        ws.send(JSON.stringify({ type: 'pong' }));
+                    }
                 }
             } catch {
                 // Raw text fallback
@@ -529,9 +716,22 @@ server.on('upgrade', (request, socket, head) => {
     });
 });
 
+// Ping interval for all WebSocket clients (30s)
+const pingInterval = setInterval(() => {
+    wss.clients.forEach((ws) => {
+        if (ws.isAlive === false) {
+            ws.terminate();
+            return;
+        }
+        ws.isAlive = false;
+        ws.ping();
+    });
+}, 30000);
+
 // Graceful shutdown
 function shutdown() {
     console.log('\nShutting down...');
+    clearInterval(pingInterval);
     sessionManager.cleanupAllSessions();
     wss.close();
     server.close(() => {
@@ -558,6 +758,7 @@ server.listen(PORT, HOST, () => {
     console.log(`  GET  ${protocol}://${displayHost}:${PORT}/api/notifications`);
     console.log(`  DEL  ${protocol}://${displayHost}:${PORT}/api/notifications`);
     console.log(`  DEL  ${protocol}://${displayHost}:${PORT}/api/notifications/:id`);
+    console.log(`  POST ${protocol}://${displayHost}:${PORT}/api/sessions/:id/restore`);
     console.log(`  WS   ws://${displayHost}:${PORT}/ws/sessions/:id`);
     console.log(`\nExample notification:`);
     console.log(`  curl ${useHttps ? '-k ' : ''}-X POST ${protocol}://${displayHost}:${PORT}/api/notify \\`);
