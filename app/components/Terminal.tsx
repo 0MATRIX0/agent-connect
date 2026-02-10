@@ -11,12 +11,17 @@ interface TerminalProps {
   wsUrl: string;
   onSessionEnd?: (exitCode: number | null) => void;
   onConnectionChange?: (status: 'connecting' | 'connected' | 'disconnected') => void;
+  onFocus?: () => void;
+  className?: string;
 }
 
 export interface TerminalHandle {
   getBufferContent: () => string;
   getSearchAddon: () => SearchAddon | null;
   sendInput: (data: string) => void;
+  clearTerminal: () => void;
+  selectAll: () => void;
+  getSelection: () => string;
 }
 
 const MAX_RECONNECT_ATTEMPTS = 10;
@@ -25,7 +30,7 @@ const MAX_DELAY = 16000;
 const HEARTBEAT_INTERVAL = 25000;
 
 const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Terminal(
-  { sessionId, wsUrl, onSessionEnd, onConnectionChange },
+  { sessionId, wsUrl, onSessionEnd, onConnectionChange, onFocus, className },
   ref
 ) {
   const termRef = useRef<HTMLDivElement>(null);
@@ -68,6 +73,15 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Terminal(
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'input', data }));
       }
+    },
+    clearTerminal() {
+      xtermRef.current?.clear();
+    },
+    selectAll() {
+      xtermRef.current?.selectAll();
+    },
+    getSelection() {
+      return xtermRef.current?.getSelection() || '';
     },
   }));
 
@@ -238,7 +252,7 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Terminal(
     // Initial WebSocket connection
     connectWebSocket(term, fitAddon, false);
 
-    // Handle resize
+    // Handle resize via ResizeObserver (works for both window resize and split pane resizing)
     const handleResize = () => {
       fitAddon.fit();
       const dims = fitAddon.proposeDimensions();
@@ -247,10 +261,20 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Terminal(
       }
     };
 
+    let resizeObserver: ResizeObserver | null = null;
+    if (termRef.current) {
+      resizeObserver = new ResizeObserver(() => {
+        handleResize();
+      });
+      resizeObserver.observe(termRef.current);
+    }
+
+    // Keep window resize as fallback
     window.addEventListener('resize', handleResize);
 
     return () => {
       cleanupRef.current = true;
+      resizeObserver?.disconnect();
       window.removeEventListener('resize', handleResize);
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       stopHeartbeat();
@@ -260,7 +284,7 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Terminal(
   }, [sessionId, wsUrl, connectWebSocket, stopHeartbeat]);
 
   return (
-    <div className="flex flex-col h-full bg-obsidian">
+    <div className={`flex flex-col h-full bg-obsidian ${className || ''}`} onClick={onFocus}>
       {connectionStatus === 'disconnected' && !sessionEndedRef.current && (
         <div className="bg-rose-500/10 text-rose-300 px-4 py-1.5 text-xs text-center border-b border-rose-500/20 flex items-center justify-center gap-3">
           {showReconnectButton ? (
