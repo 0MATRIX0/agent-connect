@@ -429,8 +429,31 @@ async function handleRequest(req, res) {
             }
         }
 
-        // Delete a project
+        // Reorder projects
+        if (pathname === '/api/projects/reorder' && req.method === 'PUT') {
+            const { ids } = await parseBody(req);
+            try {
+                const reordered = projects.reorderProjects(ids);
+                return sendJson(res, 200, reordered, req);
+            } catch (error) {
+                return sendJson(res, 400, { error: error.message }, req);
+            }
+        }
+
+        // Update a project
         const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
+        if (projectMatch && req.method === 'PUT') {
+            const { name, path: projectPath } = await parseBody(req);
+            try {
+                const updated = projects.updateProject(projectMatch[1], { name, path: projectPath });
+                return sendJson(res, 200, updated, req);
+            } catch (error) {
+                const status = error.message === 'Project not found' ? 404 : 400;
+                return sendJson(res, status, { error: error.message }, req);
+            }
+        }
+
+        // Delete a project
         if (projectMatch && req.method === 'DELETE') {
             try {
                 const removed = projects.removeProject(projectMatch[1]);
