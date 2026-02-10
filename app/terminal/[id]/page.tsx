@@ -6,17 +6,15 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import {
   Square, ClipboardCopy, Search, ArrowLeft, RotateCcw, X,
-  Copy, ClipboardPaste, Trash2, TextSelect, SplitSquareHorizontal,
-  SplitSquareVertical, XCircle,
+  SplitSquareHorizontal, SplitSquareVertical, XCircle, Snowflake, Play,
 } from 'lucide-react';
 import FloatingToolbar from '../../components/ui/FloatingToolbar';
 import IconButton from '../../components/ui/IconButton';
-import ContextMenu from '../../components/ui/ContextMenu';
-import type { MenuItem } from '../../components/ui/ContextMenu';
 import TerminalSearch from '../../components/terminal/TerminalSearch';
 import StatusBar from '../../components/terminal/StatusBar';
 import VirtualKeypad from '../../components/terminal/VirtualKeypad';
 import SplitTerminalLayout from '../../components/terminal/SplitTerminalLayout';
+import ConversationPane from '../../components/sessions/ConversationPane';
 import { useVisualViewport } from '../../hooks/useVisualViewport';
 import { useToast } from '../../components/ui/Toast';
 import { getAllLeaves, findLeaf, replaceLeaf, removeLeaf } from '../../components/terminal/layoutUtils';
@@ -31,10 +29,12 @@ interface Session {
   projectId: string;
   projectName: string;
   projectPath: string;
-  status: 'running' | 'stopped';
+  status: 'running' | 'stopped' | 'frozen';
   pid: number;
   startedAt: string;
   stoppedAt: string | null;
+  frozenAt?: string | null;
+  type?: 'terminal' | 'conversation';
 }
 
 export default function TerminalPage() {
@@ -74,7 +74,6 @@ export default function TerminalPage() {
     paneId: 'root',
   });
   const [activePaneId, setActivePaneId] = useState('root');
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     fetchSession();
@@ -98,6 +97,13 @@ export default function TerminalPage() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isHistorical, activePaneId]);
+
+  // Auto-focus the terminal when connected so user can type immediately
+  useEffect(() => {
+    if (connectionStatus !== 'connected' || isHistorical) return;
+    const handle = paneRefs.current.get(activePaneId) || terminalRef.current;
+    if (handle) handle.focus();
+  }, [connectionStatus, isHistorical, activePaneId]);
 
   // Render historical scrollback in a read-only xterm
   useEffect(() => {
@@ -184,7 +190,7 @@ export default function TerminalPage() {
       const data = await res.json();
       setSession(data);
 
-      if (data.status === 'stopped') {
+      if (data.status === 'stopped' || data.status === 'frozen') {
         setEnded(true);
         setIsHistorical(true);
         try {
@@ -230,6 +236,38 @@ export default function TerminalPage() {
       toast('Failed to restore session');
     } finally {
       setRestoring(false);
+    }
+  }
+
+  async function handleFreeze() {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/freeze`, { method: 'POST' });
+      if (res.ok) {
+        setEnded(true);
+        fetchSession();
+      } else {
+        const data = await res.json();
+        toast(data.error || 'Failed to freeze session');
+      }
+    } catch {
+      toast('Failed to freeze session');
+    }
+  }
+
+  async function handleUnfreeze() {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/unfreeze`, { method: 'POST' });
+      if (res.ok) {
+        setEnded(false);
+        setIsHistorical(false);
+        setHistoricalScrollback(null);
+        fetchSession();
+      } else {
+        const data = await res.json();
+        toast(data.error || 'Failed to unfreeze session');
+      }
+    } catch {
+      toast('Failed to unfreeze session');
     }
   }
 
@@ -354,101 +392,32 @@ export default function TerminalPage() {
     }
   }
 
-  function handlePaneContextMenu(e: React.MouseEvent, paneId: string) {
-    e.preventDefault();
-    setActivePaneId(paneId);
-    setContextMenu({ x: e.clientX, y: e.clientY });
-  }
-
-  function buildContextMenuItems(): MenuItem[] {
-    const activeRef = paneRefs.current.get(activePaneId);
-    const hasSelection = activeRef ? activeRef.getSelection().length > 0 : false;
-    const leaves = getAllLeaves(layout);
-    const canClose = leaves.length > 1;
-
-    return [
-      {
-        label: 'Copy',
-        icon: Copy,
-        shortcut: 'Ctrl+C',
-        disabled: !hasSelection,
-        onClick: () => {
-          if (activeRef) {
-            navigator.clipboard.writeText(activeRef.getSelection());
-          }
-        },
-      },
-      {
-        label: 'Paste',
-        icon: ClipboardPaste,
-        shortcut: 'Ctrl+V',
-        onClick: async () => {
-          try {
-            const text = await navigator.clipboard.readText();
-            if (activeRef && text) {
-              activeRef.sendInput(text);
-            }
-          } catch {
-            toast('Clipboard access denied');
-          }
-        },
-      },
-      {
-        label: 'Clear',
-        icon: Trash2,
-        onClick: () => {
-          activeRef?.clearTerminal();
-        },
-      },
-      {
-        label: 'Select All',
-        icon: TextSelect,
-        shortcut: 'Ctrl+A',
-        onClick: () => {
-          activeRef?.selectAll();
-        },
-      },
-      {
-        label: 'Search',
-        icon: Search,
-        shortcut: 'Ctrl+F',
-        onClick: () => {
-          openSearchForActivePane();
-        },
-      },
-      {
-        label: 'Split Down',
-        icon: SplitSquareHorizontal,
-        separator: true,
-        onClick: () => {
-          handleSplit(activePaneId, 'horizontal');
-        },
-      },
-      {
-        label: 'Split Right',
-        icon: SplitSquareVertical,
-        onClick: () => {
-          handleSplit(activePaneId, 'vertical');
-        },
-      },
-      {
-        label: 'Close Pane',
-        icon: XCircle,
-        separator: true,
-        disabled: !canClose,
-        onClick: () => {
-          handleClosePane(activePaneId);
-        },
-      },
-    ];
-  }
-
   function handlePaneSessionEnd(paneId: string) {
-    // If the root pane's session ends, mark as ended
-    if (paneId === 'root') {
-      setEnded(true);
-      fetchSession();
-    }
+    setLayout(prev => {
+      const leaves = getAllLeaves(prev);
+      if (leaves.length <= 1) {
+        // Last pane — keep current ended behavior
+        setEnded(true);
+        fetchSession();
+        return prev;
+      }
+      const newLayout = removeLeaf(prev, paneId);
+      if (!newLayout) {
+        setEnded(true);
+        fetchSession();
+        return prev;
+      }
+      // Clean up the pane ref
+      paneRefs.current.delete(paneId);
+      // Reassign active pane if needed
+      if (activePaneId === paneId) {
+        const remaining = getAllLeaves(newLayout);
+        if (remaining.length > 0) {
+          setActivePaneId(remaining[0].paneId);
+        }
+      }
+      return newLayout;
+    });
   }
 
   function handlePaneConnectionChange(paneId: string, status: string) {
@@ -457,6 +426,16 @@ export default function TerminalPage() {
       setConnectionStatus(status as 'connecting' | 'connected' | 'disconnected');
     }
   }
+
+  // Auto-focus the active pane's terminal so user can type immediately
+  const handlePaneFocus = useCallback((paneId: string) => {
+    setActivePaneId(paneId);
+    // Small delay to let React render the active state, then focus
+    setTimeout(() => {
+      const handle = paneRefs.current.get(paneId);
+      if (handle) handle.focus();
+    }, 0);
+  }, []);
 
   if (loading) {
     return (
@@ -477,6 +456,18 @@ export default function TerminalPage() {
           Back to Sessions
         </Link>
       </main>
+    );
+  }
+
+  // Render conversation view for conversation-type sessions
+  if (session?.type === 'conversation') {
+    return (
+      <div
+        className="flex flex-col bg-obsidian pb-16 md:pb-0"
+        style={{ height: viewportHeight }}
+      >
+        <ConversationPane session={session} />
+      </div>
     );
   }
 
@@ -507,6 +498,20 @@ export default function TerminalPage() {
         </div>
       )}
 
+      {/* Frozen banner */}
+      {session?.status === 'frozen' && (
+        <div className="bg-cyan-500/10 text-cyan-300 px-4 py-2 text-xs text-center border-b border-cyan-500/20 flex items-center justify-center gap-3">
+          <Snowflake className="w-3 h-3" />
+          <span>Session is frozen</span>
+          <button
+            onClick={handleUnfreeze}
+            className="underline hover:text-cyan-200 transition-colors font-medium"
+          >
+            Unfreeze to continue
+          </button>
+        </div>
+      )}
+
       {/* Floating toolbar */}
       <FloatingToolbar position="top-right" autoHide autoHideDelay={3000}>
         <IconButton
@@ -515,7 +520,23 @@ export default function TerminalPage() {
           onClick={() => router.push('/sessions')}
           size="sm"
         />
-        {isHistorical && (
+        {session?.status === 'frozen' && (
+          <>
+            <IconButton
+              icon={Play}
+              label="Unfreeze session"
+              onClick={handleUnfreeze}
+              size="sm"
+            />
+            <IconButton
+              icon={RotateCcw}
+              label={restoring ? 'Restoring...' : 'Restore session'}
+              onClick={handleRestore}
+              size="sm"
+            />
+          </>
+        )}
+        {isHistorical && session?.status !== 'frozen' && (
           <IconButton
             icon={RotateCcw}
             label={restoring ? 'Restoring...' : 'Restore session'}
@@ -524,13 +545,21 @@ export default function TerminalPage() {
           />
         )}
         {!ended && !isHistorical && (
-          <IconButton
-            icon={Square}
-            label="Stop session"
-            variant="danger"
-            onClick={handleStop}
-            size="sm"
-          />
+          <>
+            <IconButton
+              icon={Snowflake}
+              label="Freeze session"
+              onClick={handleFreeze}
+              size="sm"
+            />
+            <IconButton
+              icon={Square}
+              label="Stop session"
+              variant="danger"
+              onClick={handleStop}
+              size="sm"
+            />
+          </>
         )}
         <IconButton
           icon={ClipboardCopy}
@@ -539,6 +568,30 @@ export default function TerminalPage() {
           onClick={handleCopyLogs}
           size="sm"
         />
+        {!isHistorical && (
+          <>
+            <IconButton
+              icon={SplitSquareVertical}
+              label="Split down"
+              onClick={() => handleSplit(activePaneId, 'horizontal')}
+              size="sm"
+            />
+            <IconButton
+              icon={SplitSquareHorizontal}
+              label="Split right"
+              onClick={() => handleSplit(activePaneId, 'vertical')}
+              size="sm"
+            />
+            {isSplit && (
+              <IconButton
+                icon={XCircle}
+                label="Close pane"
+                onClick={() => handleClosePane(activePaneId)}
+                size="sm"
+              />
+            )}
+          </>
+        )}
         <IconButton
           icon={Search}
           label="Search"
@@ -546,16 +599,6 @@ export default function TerminalPage() {
           size="sm"
         />
       </FloatingToolbar>
-
-      {/* Context menu */}
-      {contextMenu && (
-        <ContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
-          items={buildContextMenuItems()}
-          onClose={() => setContextMenu(null)}
-        />
-      )}
 
       {/* Search overlay */}
       <TerminalSearch
@@ -573,7 +616,7 @@ export default function TerminalPage() {
             <SplitTerminalLayout
               layout={layout}
               activePaneId={activePaneId}
-              onPaneFocus={setActivePaneId}
+              onPaneFocus={handlePaneFocus}
               onSplit={handleSplit}
               onClosePane={handleClosePane}
               onLayoutChange={setLayout}
@@ -581,16 +624,9 @@ export default function TerminalPage() {
               wsToken={wsToken}
               onSessionEnd={handlePaneSessionEnd}
               onConnectionChange={handlePaneConnectionChange}
-              onContextMenu={handlePaneContextMenu}
             />
           ) : (
-            <div
-              className="h-full"
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setContextMenu({ x: e.clientX, y: e.clientY });
-              }}
-            >
+            <div className="h-full">
               <Terminal
                 ref={(handle) => {
                   (terminalRef as React.MutableRefObject<TerminalHandle | null>).current = handle;

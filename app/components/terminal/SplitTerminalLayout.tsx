@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import dynamic from 'next/dynamic';
-import type { PaneNode, SplitDirection } from './splitTypes';
+import type { PaneNode, SplitDirection, DropZone } from './splitTypes';
 import type { TerminalHandle } from '../Terminal';
 
 const Terminal = dynamic(() => import('../Terminal'), { ssr: false });
@@ -18,7 +18,7 @@ interface SplitTerminalLayoutProps {
   wsToken: string;
   onSessionEnd: (paneId: string) => void;
   onConnectionChange: (paneId: string, status: string) => void;
-  onContextMenu: (e: React.MouseEvent, paneId: string) => void;
+  onDropSession?: (targetPaneId: string, sessionId: string, zone: NonNullable<DropZone>) => void;
 }
 
 export default function SplitTerminalLayout({
@@ -30,7 +30,7 @@ export default function SplitTerminalLayout({
   wsToken,
   onSessionEnd,
   onConnectionChange,
-  onContextMenu,
+  onDropSession,
 }: SplitTerminalLayoutProps) {
   return (
     <div className="w-full h-full">
@@ -44,7 +44,7 @@ export default function SplitTerminalLayout({
         wsToken={wsToken}
         onSessionEnd={onSessionEnd}
         onConnectionChange={onConnectionChange}
-        onContextMenu={onContextMenu}
+        onDropSession={onDropSession}
       />
     </div>
   );
@@ -60,7 +60,7 @@ interface PaneRendererProps {
   wsToken: string;
   onSessionEnd: (paneId: string) => void;
   onConnectionChange: (paneId: string, status: string) => void;
-  onContextMenu: (e: React.MouseEvent, paneId: string) => void;
+  onDropSession?: (targetPaneId: string, sessionId: string, zone: NonNullable<DropZone>) => void;
   // Path in the tree for ratio updates
   path?: ('first' | 'second')[];
 }
@@ -75,7 +75,7 @@ function PaneRenderer({
   wsToken,
   onSessionEnd,
   onConnectionChange,
-  onContextMenu,
+  onDropSession,
 }: PaneRendererProps) {
   if (node.type === 'leaf') {
     return (
@@ -84,11 +84,11 @@ function PaneRenderer({
         paneId={node.paneId}
         isActive={node.paneId === activePaneId}
         onFocus={() => onPaneFocus(node.paneId)}
-        onContextMenu={(e) => onContextMenu(e, node.paneId)}
         paneRefs={paneRefs}
         wsToken={wsToken}
         onSessionEnd={() => onSessionEnd(node.paneId)}
         onConnectionChange={(status) => onConnectionChange(node.paneId, status)}
+        onDropSession={onDropSession}
       />
     );
   }
@@ -104,7 +104,7 @@ function PaneRenderer({
       wsToken={wsToken}
       onSessionEnd={onSessionEnd}
       onConnectionChange={onConnectionChange}
-      onContextMenu={onContextMenu}
+      onDropSession={onDropSession}
     />
   );
 }
@@ -119,7 +119,7 @@ interface SplitPaneProps {
   wsToken: string;
   onSessionEnd: (paneId: string) => void;
   onConnectionChange: (paneId: string, status: string) => void;
-  onContextMenu: (e: React.MouseEvent, paneId: string) => void;
+  onDropSession?: (targetPaneId: string, sessionId: string, zone: NonNullable<DropZone>) => void;
 }
 
 function SplitPane({
@@ -132,7 +132,7 @@ function SplitPane({
   wsToken,
   onSessionEnd,
   onConnectionChange,
-  onContextMenu,
+  onDropSession,
 }: SplitPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [ratio, setRatio] = useState(node.ratio);
@@ -221,7 +221,7 @@ function SplitPane({
           wsToken={wsToken}
           onSessionEnd={onSessionEnd}
           onConnectionChange={onConnectionChange}
-          onContextMenu={onContextMenu}
+          onDropSession={onDropSession}
         />
       </div>
 
@@ -249,7 +249,7 @@ function SplitPane({
           wsToken={wsToken}
           onSessionEnd={onSessionEnd}
           onConnectionChange={onConnectionChange}
-          onContextMenu={onContextMenu}
+          onDropSession={onDropSession}
         />
       </div>
     </div>
@@ -285,11 +285,42 @@ interface LeafPaneProps {
   paneId: string;
   isActive: boolean;
   onFocus: () => void;
-  onContextMenu: (e: React.MouseEvent) => void;
   paneRefs: React.MutableRefObject<Map<string, TerminalHandle>>;
   wsToken: string;
   onSessionEnd: () => void;
   onConnectionChange: (status: string) => void;
+  onDropSession?: (targetPaneId: string, sessionId: string, zone: NonNullable<DropZone>) => void;
+}
+
+const dropZoneStyles: Record<NonNullable<DropZone>, string> = {
+  top: 'inset-x-0 top-0 h-1/2',
+  bottom: 'inset-x-0 bottom-0 h-1/2',
+  left: 'inset-y-0 left-0 w-1/2',
+  right: 'inset-y-0 right-0 w-1/2',
+};
+
+function computeDropZone(e: React.DragEvent<HTMLDivElement>): NonNullable<DropZone> | null {
+  const rect = e.currentTarget.getBoundingClientRect();
+  const x = (e.clientX - rect.left) / rect.width;
+  const y = (e.clientY - rect.top) / rect.height;
+
+  const distances = {
+    top: y,
+    bottom: 1 - y,
+    left: x,
+    right: 1 - x,
+  };
+
+  let closest: NonNullable<DropZone> = 'top';
+  let minDist = Infinity;
+  for (const [zone, dist] of Object.entries(distances)) {
+    if (dist < minDist) {
+      minDist = dist;
+      closest = zone as NonNullable<DropZone>;
+    }
+  }
+
+  return minDist <= 0.3 ? closest : null;
 }
 
 function LeafPane({
@@ -297,13 +328,14 @@ function LeafPane({
   paneId,
   isActive,
   onFocus,
-  onContextMenu,
   paneRefs,
   wsToken,
   onSessionEnd,
   onConnectionChange,
+  onDropSession,
 }: LeafPaneProps) {
   const termRef = useRef<TerminalHandle>(null);
+  const [dropZone, setDropZone] = useState<DropZone>(null);
 
   // Register ref in parent's paneRefs map
   useEffect(() => {
@@ -330,17 +362,45 @@ function LeafPane({
     return wsToken ? `${base}?token=${wsToken}` : base;
   }
 
+  const handleClick = useCallback(() => {
+    onFocus();
+    // Auto-focus the terminal so the user can type immediately
+    const handle = paneRefs.current.get(paneId);
+    if (handle) handle.focus();
+  }, [onFocus, paneId, paneRefs]);
+
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (!e.dataTransfer.types.includes('application/session-id')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDropZone(computeDropZone(e));
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    // Only clear when actually leaving the container (not entering a child)
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setDropZone(null);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const droppedSessionId = e.dataTransfer.getData('application/session-id');
+    const zone = computeDropZone(e);
+    setDropZone(null);
+    if (droppedSessionId && zone && onDropSession) {
+      onDropSession(paneId, droppedSessionId, zone);
+    }
+  }, [paneId, onDropSession]);
+
   return (
     <div
       className={`h-full w-full relative ${
         isActive ? 'ring-1 ring-emerald-500/30' : ''
       }`}
-      onClick={onFocus}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        onFocus();
-        onContextMenu(e);
-      }}
+      onClick={handleClick}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
     >
       <Terminal
         ref={handleRefUpdate}
@@ -348,8 +408,14 @@ function LeafPane({
         wsUrl={getWsUrl()}
         onSessionEnd={() => onSessionEnd()}
         onConnectionChange={(status) => onConnectionChange(status)}
-        onFocus={onFocus}
+        onFocus={handleClick}
       />
+      {/* Drop zone preview overlay */}
+      {dropZone && (
+        <div
+          className={`absolute ${dropZoneStyles[dropZone]} bg-emerald-500/15 border-2 border-emerald-500/40 pointer-events-none rounded-sm z-10`}
+        />
+      )}
     </div>
   );
 }

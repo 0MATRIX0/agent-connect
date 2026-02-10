@@ -48,6 +48,12 @@ export function removeLeaf(tree: PaneNode, paneId: string): PaneNode | null {
   return tree;
 }
 
+/** Check if a session ID already exists in the layout tree */
+export function hasSession(tree: PaneNode, sessionId: string): boolean {
+  if (tree.type === 'leaf') return tree.sessionId === sessionId;
+  return hasSession(tree.first, sessionId) || hasSession(tree.second, sessionId);
+}
+
 /** Get all leaf nodes from the tree */
 export function getAllLeaves(tree: PaneNode): LeafNode[] {
   if (tree.type === 'leaf') return [tree];

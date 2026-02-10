@@ -1,12 +1,13 @@
 'use client';
 
-import { Suspense, useState, useEffect, useMemo } from 'react';
+import { Suspense, useState, useEffect, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Terminal, Plus } from 'lucide-react';
 import { useSessionMonitor } from '../hooks/useSessionMonitor';
 import SessionDock from '../components/sessions/SessionDock';
 import TerminalPane, { EmptyTerminalPane } from '../components/sessions/TerminalPane';
 import CreateSessionModal from '../components/sessions/CreateSessionModal';
+import ConfirmDialog from '../components/ui/ConfirmDialog';
 import GlassCard from '../components/ui/GlassCard';
 
 function SessionsContent() {
@@ -14,6 +15,8 @@ function SessionsContent() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [wsToken, setWsToken] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [stopTarget, setStopTarget] = useState<{ id: string; name: string } | null>(null);
+  const [stopping, setStopping] = useState(false);
 
   const searchParams = useSearchParams();
   const newSessionId = searchParams.get('new');
@@ -67,6 +70,40 @@ function SessionsContent() {
     setActiveSessionId(sessionId);
   }
 
+  const handleAddSessionToProject = useCallback(async (projectId: string) => {
+    try {
+      const res = await fetch('/api/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+      const data = await res.json();
+      if (res.ok && data.id) {
+        setActiveSessionId(data.id);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleStopSession = useCallback((sessionId: string) => {
+    const session = sessions.find(s => s.id === sessionId);
+    setStopTarget({ id: sessionId, name: session?.projectName || 'this session' });
+  }, [sessions]);
+
+  const confirmStop = useCallback(async () => {
+    if (!stopTarget) return;
+    setStopping(true);
+    try {
+      await fetch(`/api/sessions/${stopTarget.id}`, { method: 'DELETE' });
+    } catch {
+      // ignore
+    } finally {
+      setStopping(false);
+      setStopTarget(null);
+    }
+  }, [stopTarget]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-[calc(100vh-5rem)] md:h-screen">
@@ -113,6 +150,8 @@ function SessionsContent() {
           activeId={activeSessionId}
           onSelect={setActiveSessionId}
           onCreateSession={() => setShowCreateModal(true)}
+          onAddSessionToProject={handleAddSessionToProject}
+          onStopSession={handleStopSession}
         />
 
         <div className="flex-1 min-w-0 min-h-0">
@@ -121,6 +160,7 @@ function SessionsContent() {
               key={activeSessionId}
               session={activeSession}
               wsUrl={getWsUrl(activeSession.id)}
+              wsToken={wsToken}
             />
           ) : (
             <EmptyTerminalPane />
@@ -132,6 +172,18 @@ function SessionsContent() {
         open={showCreateModal}
         onClose={() => setShowCreateModal(false)}
         onSessionCreated={handleSessionCreated}
+      />
+
+      <ConfirmDialog
+        open={!!stopTarget}
+        title="Stop Session"
+        description={`This will terminate the session for "${stopTarget?.name}". Any unsaved work in the terminal will be lost.`}
+        confirmLabel="Stop Session"
+        cancelLabel="Keep Running"
+        variant="danger"
+        loading={stopping}
+        onConfirm={confirmStop}
+        onCancel={() => setStopTarget(null)}
       />
     </>
   );

@@ -22,6 +22,7 @@ export interface TerminalHandle {
   clearTerminal: () => void;
   selectAll: () => void;
   getSelection: () => string;
+  focus: () => void;
 }
 
 const MAX_RECONNECT_ATTEMPTS = 10;
@@ -83,6 +84,9 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Terminal(
     getSelection() {
       return xtermRef.current?.getSelection() || '';
     },
+    focus() {
+      xtermRef.current?.focus();
+    },
   }));
 
   const startHeartbeat = useCallback((ws: WebSocket) => {
@@ -141,6 +145,13 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Terminal(
           sessionEndedRef.current = true;
           term.write('\r\n\x1b[1;33m--- Session ended ---\x1b[0m\r\n');
           onSessionEndRef.current?.(msg.exitCode);
+        } else if (msg.type === 'frozen') {
+          sessionEndedRef.current = true;
+          term.write('\r\n\x1b[1;36m--- Session frozen ---\x1b[0m\r\n');
+          onSessionEndRef.current?.(null);
+        } else if (msg.type === 'unfrozen') {
+          sessionEndedRef.current = false;
+          term.write('\r\n\x1b[1;36m--- Session unfrozen ---\x1b[0m\r\n');
         }
         // pong messages are silently consumed
       } catch {
@@ -243,7 +254,10 @@ const Terminal = forwardRef<TerminalHandle, TerminalProps>(function Terminal(
     term.loadAddon(searchAddon);
     term.open(termRef.current);
 
-    setTimeout(() => fitAddon.fit(), 50);
+    setTimeout(() => {
+      fitAddon.fit();
+      term.focus();
+    }, 50);
 
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;

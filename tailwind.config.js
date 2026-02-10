@@ -22,6 +22,7 @@ module.exports = {
         'glow-amber': '0 0 10px #F59E0B',
         'glow-blue': '0 0 10px #3B82F6',
         'glow-purple': '0 0 10px #A855F7',
+        'glow-cyan': '0 0 10px #22D3EE',
       },
       backdropBlur: {
         glass: '16px',

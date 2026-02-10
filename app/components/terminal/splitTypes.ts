@@ -15,3 +15,5 @@ export interface LeafNode {
 }
 
 export type PaneNode = SplitNode | LeafNode;
+
+export type DropZone = 'top' | 'bottom' | 'left' | 'right' | null;
