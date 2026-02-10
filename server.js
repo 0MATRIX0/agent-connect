@@ -182,15 +182,16 @@ function saveSubscriptions(subscriptions) {
     fs.writeFileSync(SUBSCRIPTIONS_FILE, JSON.stringify(subscriptions, null, 2));
 }
 
-// Parse JSON body (max 100KB)
+// Parse JSON body (max 100KB default, configurable)
 const MAX_BODY_SIZE = 100 * 1024;
-async function parseBody(req) {
+const MAX_CONVERSATION_BODY_SIZE = 5 * 1024 * 1024; // 5MB for conversations
+async function parseBody(req, maxSize = MAX_BODY_SIZE) {
     return new Promise((resolve, reject) => {
         let body = '';
         let size = 0;
         req.on('data', chunk => {
             size += chunk.length;
-            if (size > MAX_BODY_SIZE) {
+            if (size > maxSize) {
                 req.destroy();
                 reject(new Error('Request body too large'));
                 return;
@@ -214,7 +215,7 @@ function sendJson(res, status, data, req) {
     res.writeHead(status, {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': corsOrigin,
-        'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     });
     res.end(JSON.stringify(data));
@@ -230,7 +231,7 @@ async function handleRequest(req, res) {
         const corsOrigin = getCorsOrigin(req);
         res.writeHead(204, {
             'Access-Control-Allow-Origin': corsOrigin,
-            'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+            'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
             'Access-Control-Allow-Headers': 'Content-Type, Authorization',
         });
         res.end();
@@ -328,6 +329,11 @@ async function handleRequest(req, res) {
                 icon: payload.icon,
                 data: payload.data,
             });
+
+            // Skip push notification if user is actively on the app (has WebSocket connections)
+            if (sessions.hasActiveClients()) {
+                return sendJson(res, 200, { success: true, message: 'User is active, push suppressed', sent: 0, suppressed: true }, req);
+            }
 
             const subscriptions = getSubscriptions();
 
@@ -429,8 +435,31 @@ async function handleRequest(req, res) {
             }
         }
 
-        // Delete a project
+        // Reorder projects
+        if (pathname === '/api/projects/reorder' && req.method === 'PUT') {
+            const { ids } = await parseBody(req);
+            try {
+                const reordered = projects.reorderProjects(ids);
+                return sendJson(res, 200, reordered, req);
+            } catch (error) {
+                return sendJson(res, 400, { error: error.message }, req);
+            }
+        }
+
+        // Update a project
         const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
+        if (projectMatch && req.method === 'PUT') {
+            const { name, path: projectPath } = await parseBody(req);
+            try {
+                const updated = projects.updateProject(projectMatch[1], { name, path: projectPath });
+                return sendJson(res, 200, updated, req);
+            } catch (error) {
+                const status = error.message === 'Project not found' ? 404 : 400;
+                return sendJson(res, status, { error: error.message }, req);
+            }
+        }
+
+        // Delete a project
         if (projectMatch && req.method === 'DELETE') {
             try {
                 const removed = projects.removeProject(projectMatch[1]);
@@ -453,7 +482,7 @@ async function handleRequest(req, res) {
 
         // Launch a session
         if (pathname === '/api/sessions' && req.method === 'POST') {
-            const { projectId } = await parseBody(req);
+            const { projectId, branch } = await parseBody(req);
             if (!projectId || typeof projectId !== 'string') {
                 return sendJson(res, 400, { error: 'projectId is required and must be a string' }, req);
             }
@@ -462,7 +491,9 @@ async function handleRequest(req, res) {
                 return sendJson(res, 404, { error: 'Project not found' }, req);
             }
             try {
-                const session = sessionManager.createSession(project.id, project.name, project.path);
+                const opts = {};
+                if (branch && typeof branch === 'string') opts.branch = branch;
+                const session = sessionManager.createSession(project.id, project.name, project.path, opts);
                 return sendJson(res, 201, session, req);
             } catch (error) {
                 return sendJson(res, 500, { error: error.message }, req);
@@ -508,6 +539,20 @@ async function handleRequest(req, res) {
             } catch (error) {
                 return sendJson(res, 500, { error: error.message }, req);
             }
+        }
+
+        // Update session activity status (used by hook scripts)
+        const sessionStatusMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/status$/);
+        if (sessionStatusMatch && req.method === 'PUT') {
+            const { activityStatus } = await parseBody(req);
+            if (!activityStatus || typeof activityStatus !== 'string') {
+                return sendJson(res, 400, { error: 'activityStatus string is required' }, req);
+            }
+            const updated = sessionManager.updateSessionStatus(sessionStatusMatch[1], activityStatus);
+            if (!updated) {
+                return sendJson(res, 404, { error: 'Session not found or not in memory' }, req);
+            }
+            return sendJson(res, 200, updated, req);
         }
 
         // Get session output (last N lines, or full scrollback with ?full=true)
@@ -575,6 +620,77 @@ async function handleRequest(req, res) {
             } catch (error) {
                 return sendJson(res, 500, { error: error.message }, req);
             }
+        }
+
+        // Freeze a session (preserve across server restarts)
+        const sessionFreezeMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/freeze$/);
+        if (sessionFreezeMatch && req.method === 'POST') {
+            try {
+                const session = sessionManager.freezeSession(sessionFreezeMatch[1]);
+                return sendJson(res, 200, { success: true, session }, req);
+            } catch (error) {
+                const status = error.message.includes('not found') ? 404 : 400;
+                return sendJson(res, status, { error: error.message }, req);
+            }
+        }
+
+        // Unfreeze a session (resume after server restart)
+        const sessionUnfreezeMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/unfreeze$/);
+        if (sessionUnfreezeMatch && req.method === 'POST') {
+            try {
+                const session = sessionManager.unfreezeSession(sessionUnfreezeMatch[1]);
+                return sendJson(res, 200, { success: true, session }, req);
+            } catch (error) {
+                const status = error.message.includes('not found') ? 404 : 400;
+                return sendJson(res, status, { error: error.message }, req);
+            }
+        }
+
+        // Get worktree info for a session
+        const sessionWorktreeMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/worktree$/);
+        if (sessionWorktreeMatch && req.method === 'GET') {
+            const info = sessionManager.getSessionWorktreeInfo(sessionWorktreeMatch[1]);
+            if (!info) {
+                return sendJson(res, 404, { error: 'Session not found' }, req);
+            }
+            return sendJson(res, 200, info, req);
+        }
+
+        // Clean up worktree for a stopped/frozen session
+        if (sessionWorktreeMatch && req.method === 'DELETE') {
+            try {
+                const result = sessionManager.cleanupSessionWorktree(sessionWorktreeMatch[1]);
+                return sendJson(res, 200, { success: true, session: result }, req);
+            } catch (error) {
+                const status = error.message.includes('not found') ? 404 : 400;
+                return sendJson(res, status, { error: error.message }, req);
+            }
+        }
+
+        // --- Conversation endpoints ---
+
+        // Save a conversation transcript
+        if (pathname === '/api/conversations' && req.method === 'POST') {
+            const { projectPath, transcript } = await parseBody(req, MAX_CONVERSATION_BODY_SIZE);
+            if (!projectPath || !transcript) {
+                return sendJson(res, 400, { error: 'projectPath and transcript are required' }, req);
+            }
+            try {
+                const session = sessionManager.saveConversation({ projectPath, transcript });
+                return sendJson(res, 201, session, req);
+            } catch (error) {
+                return sendJson(res, 500, { error: error.message }, req);
+            }
+        }
+
+        // Get conversation transcript
+        const transcriptMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/transcript$/);
+        if (transcriptMatch && req.method === 'GET') {
+            const transcript = sessionManager.getTranscript(transcriptMatch[1]);
+            if (transcript === null) {
+                return sendJson(res, 404, { error: 'Transcript not found' }, req);
+            }
+            return sendJson(res, 200, { transcript }, req);
         }
 
         // --- Notification history endpoints ---

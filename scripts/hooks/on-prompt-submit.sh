@@ -1,0 +1,40 @@
+#!/bin/bash
+# Hook: UserPromptSubmit — fires when user submits a prompt
+# Updates dashboard status — no push notification
+
+SESSION_ID="${AGENT_CONNECT_SESSION_ID:-}"
+API_URL="${AGENT_CONNECT_URL:-http://localhost:3109}"
+API_TOKEN="${AGENT_CONNECT_TOKEN:-}"
+
+# Skip if no session ID
+if [ -z "$SESSION_ID" ]; then
+  exit 0
+fi
+
+# Load token from config if not set via env
+if [ -z "$API_TOKEN" ]; then
+  CONFIG_FILE="$HOME/.agent-connect/config.json"
+  if [ -f "$CONFIG_FILE" ]; then
+    API_TOKEN=$(jq -r '.apiToken // empty' "$CONFIG_FILE" 2>/dev/null)
+  fi
+fi
+
+AUTH_HEADER=""
+if [ -n "$API_TOKEN" ]; then
+  AUTH_HEADER="Authorization: Bearer $API_TOKEN"
+fi
+
+# Update dashboard status
+STATUS_BODY=$(jq -n --arg s "Processing prompt..." '{activityStatus: $s}')
+if [ -n "$AUTH_HEADER" ]; then
+  curl -s -X PUT "$API_URL/api/sessions/$SESSION_ID/status" \
+    -H "Content-Type: application/json" \
+    -H "$AUTH_HEADER" \
+    -d "$STATUS_BODY" > /dev/null 2>&1
+else
+  curl -s -X PUT "$API_URL/api/sessions/$SESSION_ID/status" \
+    -H "Content-Type: application/json" \
+    -d "$STATUS_BODY" > /dev/null 2>&1
+fi
+
+exit 0

@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { Play, Trash2, FolderOpen } from 'lucide-react';
+import { Reorder, useDragControls } from 'framer-motion';
+import { Play, Trash2, FolderOpen, Pencil, Check, X, GripVertical } from 'lucide-react';
 import GlassCard from '../components/ui/GlassCard';
 import IconButton from '../components/ui/IconButton';
 
@@ -11,6 +12,126 @@ interface Project {
   name: string;
   path: string;
   createdAt: string;
+}
+
+function ProjectCard({
+  project,
+  editingId,
+  editName,
+  editPath,
+  setEditName,
+  setEditPath,
+  updating,
+  launching,
+  onLaunch,
+  onEdit,
+  onCancelEdit,
+  onUpdate,
+  onDelete,
+}: {
+  project: Project;
+  editingId: string | null;
+  editName: string;
+  editPath: string;
+  setEditName: (v: string) => void;
+  setEditPath: (v: string) => void;
+  updating: boolean;
+  launching: string | null;
+  onLaunch: (p: Project) => void;
+  onEdit: (p: Project) => void;
+  onCancelEdit: () => void;
+  onUpdate: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const dragControls = useDragControls();
+  const isEditing = editingId === project.id;
+
+  return (
+    <Reorder.Item
+      value={project}
+      dragListener={false}
+      dragControls={dragControls}
+      className="list-none"
+    >
+      <GlassCard hover className="p-4">
+        {isEditing ? (
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col sm:flex-row gap-3">
+              <input
+                type="text"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                placeholder="Project name"
+                className="glass-input flex-1"
+                autoFocus
+              />
+              <input
+                type="text"
+                value={editPath}
+                onChange={(e) => setEditPath(e.target.value)}
+                placeholder="Project path"
+                className="glass-input flex-[2]"
+              />
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={onCancelEdit}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all bg-white/5 text-gray-400 hover:bg-white/10"
+              >
+                <X className="w-3.5 h-3.5" />
+                Cancel
+              </button>
+              <button
+                onClick={() => onUpdate(project.id)}
+                disabled={updating || !editName.trim() || !editPath.trim()}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
+              >
+                <Check className="w-3.5 h-3.5" />
+                {updating ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center gap-4">
+            <div
+              onPointerDown={(e) => dragControls.start(e)}
+              className="cursor-grab active:cursor-grabbing touch-none text-gray-600 hover:text-gray-400 transition-colors flex-shrink-0"
+            >
+              <GripVertical className="w-5 h-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="font-semibold text-white truncate">{project.name}</h3>
+              <p className="text-sm text-gray-500 truncate font-mono">{project.path}</p>
+              <p className="text-xs text-gray-600 mt-1">
+                Added {new Date(project.createdAt).toLocaleDateString()}
+              </p>
+            </div>
+            <div className="flex gap-2 flex-shrink-0 items-center">
+              <button
+                onClick={() => onLaunch(project)}
+                disabled={launching === project.id}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
+              >
+                <Play className="w-3.5 h-3.5" />
+                {launching === project.id ? 'Launching...' : 'Launch'}
+              </button>
+              <IconButton
+                icon={Pencil}
+                label="Edit project"
+                onClick={() => onEdit(project)}
+              />
+              <IconButton
+                icon={Trash2}
+                label="Delete project"
+                variant="danger"
+                onClick={() => onDelete(project.id)}
+              />
+            </div>
+          </div>
+        )}
+      </GlassCard>
+    </Reorder.Item>
+  );
 }
 
 export default function ProjectsPage() {
@@ -22,6 +143,11 @@ export default function ProjectsPage() {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [launching, setLaunching] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editPath, setEditPath] = useState('');
+  const [updating, setUpdating] = useState(false);
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     fetchProjects();
@@ -38,6 +164,24 @@ export default function ProjectsPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function saveOrder(reordered: Project[]) {
+    try {
+      await fetch('/api/projects/reorder', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: reordered.map(p => p.id) }),
+      });
+    } catch {
+      // Silently fail — order is already updated in UI
+    }
+  }
+
+  function handleReorder(newOrder: Project[]) {
+    setProjects(newOrder);
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => saveOrder(newOrder), 300);
   }
 
   async function handleAdd(e: React.FormEvent) {
@@ -111,6 +255,47 @@ export default function ProjectsPage() {
     }
   }
 
+  function startEditing(project: Project) {
+    setEditingId(project.id);
+    setEditName(project.name);
+    setEditPath(project.path);
+    setError('');
+  }
+
+  function cancelEditing() {
+    setEditingId(null);
+    setEditName('');
+    setEditPath('');
+    setError('');
+  }
+
+  async function handleUpdate(id: string) {
+    setError('');
+    setUpdating(true);
+
+    try {
+      const res = await fetch(`/api/projects/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: editName, path: editPath }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data.error || 'Failed to update project');
+        return;
+      }
+
+      setEditingId(null);
+      fetchProjects();
+    } catch {
+      setError('Failed to update project');
+    } finally {
+      setUpdating(false);
+    }
+  }
+
   return (
     <main className="px-4 sm:px-6 lg:px-8 py-8 max-w-4xl mx-auto">
       <h1 className="text-2xl font-bold mb-6 text-white">Manage Projects</h1>
@@ -167,35 +352,31 @@ export default function ProjectsPage() {
           <p className="text-gray-600 text-sm">Add a project above to get started with Claude Code sessions.</p>
         </GlassCard>
       ) : (
-        <div className="space-y-3">
+        <Reorder.Group
+          axis="y"
+          values={projects}
+          onReorder={handleReorder}
+          className="space-y-3"
+        >
           {projects.map((project) => (
-            <GlassCard key={project.id} hover className="p-4 flex items-center justify-between gap-4">
-              <div className="min-w-0 flex-1">
-                <h3 className="font-semibold text-white truncate">{project.name}</h3>
-                <p className="text-sm text-gray-500 truncate font-mono">{project.path}</p>
-                <p className="text-xs text-gray-600 mt-1">
-                  Added {new Date(project.createdAt).toLocaleDateString()}
-                </p>
-              </div>
-              <div className="flex gap-2 flex-shrink-0 items-center">
-                <button
-                  onClick={() => handleLaunchSession(project)}
-                  disabled={launching === project.id}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50"
-                >
-                  <Play className="w-3.5 h-3.5" />
-                  {launching === project.id ? 'Launching...' : 'Launch'}
-                </button>
-                <IconButton
-                  icon={Trash2}
-                  label="Delete project"
-                  variant="danger"
-                  onClick={() => handleDelete(project.id)}
-                />
-              </div>
-            </GlassCard>
+            <ProjectCard
+              key={project.id}
+              project={project}
+              editingId={editingId}
+              editName={editName}
+              editPath={editPath}
+              setEditName={setEditName}
+              setEditPath={setEditPath}
+              updating={updating}
+              launching={launching}
+              onLaunch={handleLaunchSession}
+              onEdit={startEditing}
+              onCancelEdit={cancelEditing}
+              onUpdate={handleUpdate}
+              onDelete={handleDelete}
+            />
           ))}
-        </div>
+        </Reorder.Group>
       )}
     </main>
   );

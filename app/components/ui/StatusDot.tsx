@@ -1,7 +1,7 @@
 'use client';
 
 interface StatusDotProps {
-  status: 'running' | 'stopped' | 'error' | 'connecting';
+  status: 'running' | 'stopped' | 'error' | 'connecting' | 'frozen';
   size?: 'sm' | 'md' | 'lg';
 }
 
@@ -16,6 +16,7 @@ const colorMap = {
   stopped: 'bg-gray-500',
   error: 'bg-rose-500 shadow-glow-rose',
   connecting: 'bg-amber-500 shadow-glow-amber',
+  frozen: 'bg-cyan-400 shadow-glow-cyan',
 };
 
 const labelMap: Record<string, string> = {
@@ -23,6 +24,7 @@ const labelMap: Record<string, string> = {
   stopped: 'Stopped',
   error: 'Error',
   connecting: 'Connecting',
+  frozen: 'Frozen',
 };
 
 const pulseStatuses = new Set(['running', 'connecting']);

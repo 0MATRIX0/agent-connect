@@ -4,14 +4,21 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
-import { Square, ClipboardCopy, Search, ArrowLeft, RotateCcw, X } from 'lucide-react';
+import {
+  Square, ClipboardCopy, Search, ArrowLeft, RotateCcw, X,
+  SplitSquareHorizontal, SplitSquareVertical, XCircle, Snowflake, Play,
+} from 'lucide-react';
 import FloatingToolbar from '../../components/ui/FloatingToolbar';
 import IconButton from '../../components/ui/IconButton';
 import TerminalSearch from '../../components/terminal/TerminalSearch';
 import StatusBar from '../../components/terminal/StatusBar';
 import VirtualKeypad from '../../components/terminal/VirtualKeypad';
+import SplitTerminalLayout from '../../components/terminal/SplitTerminalLayout';
+import ConversationPane from '../../components/sessions/ConversationPane';
 import { useVisualViewport } from '../../hooks/useVisualViewport';
 import { useToast } from '../../components/ui/Toast';
+import { getAllLeaves, findLeaf, replaceLeaf, removeLeaf } from '../../components/terminal/layoutUtils';
+import type { PaneNode, SplitDirection } from '../../components/terminal/splitTypes';
 import type { TerminalHandle } from '../../components/Terminal';
 import type { SearchAddon } from '@xterm/addon-search';
 
@@ -22,10 +29,12 @@ interface Session {
   projectId: string;
   projectName: string;
   projectPath: string;
-  status: 'running' | 'stopped';
+  status: 'running' | 'stopped' | 'frozen';
   pid: number;
   startedAt: string;
   stoppedAt: string | null;
+  frozenAt?: string | null;
+  type?: 'terminal' | 'conversation';
 }
 
 export default function TerminalPage() {
@@ -39,6 +48,7 @@ export default function TerminalPage() {
   const historicalTermRef = useRef<HTMLDivElement>(null);
   const historicalXtermRef = useRef<any>(null);
   const historicalSearchRef = useRef<SearchAddon | null>(null);
+  const paneRefs = useRef<Map<string, TerminalHandle>>(new Map());
 
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
@@ -57,6 +67,14 @@ export default function TerminalPage() {
   const [wsReady, setWsReady] = useState(false);
   const { viewportHeight } = useVisualViewport();
 
+  // Split layout state
+  const [layout, setLayout] = useState<PaneNode>({
+    type: 'leaf',
+    sessionId: sessionId,
+    paneId: 'root',
+  });
+  const [activePaneId, setActivePaneId] = useState('root');
+
   useEffect(() => {
     fetchSession();
     setIsTouchDevice('ontouchstart' in window || navigator.maxTouchPoints > 0);
@@ -73,17 +91,19 @@ export default function TerminalPage() {
     function handleKeyDown(e: KeyboardEvent) {
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
         e.preventDefault();
-        setSearchOpen(true);
-        if (isHistorical) {
-          setSearchAddon(historicalSearchRef.current);
-        } else if (terminalRef.current) {
-          setSearchAddon(terminalRef.current.getSearchAddon());
-        }
+        openSearchForActivePane();
       }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isHistorical]);
+  }, [isHistorical, activePaneId]);
+
+  // Auto-focus the terminal when connected so user can type immediately
+  useEffect(() => {
+    if (connectionStatus !== 'connected' || isHistorical) return;
+    const handle = paneRefs.current.get(activePaneId) || terminalRef.current;
+    if (handle) handle.focus();
+  }, [connectionStatus, isHistorical, activePaneId]);
 
   // Render historical scrollback in a read-only xterm
   useEffect(() => {
@@ -170,12 +190,9 @@ export default function TerminalPage() {
       const data = await res.json();
       setSession(data);
 
-      if (data.status === 'stopped') {
+      if (data.status === 'stopped' || data.status === 'frozen') {
         setEnded(true);
-        // Check if session has a live PTY (in-memory) by trying WS
-        // If session is stopped and not in-memory, treat as historical
         setIsHistorical(true);
-        // Fetch full scrollback from DB
         try {
           const outputRes = await fetch(`/api/sessions/${sessionId}/output?full=true`);
           if (outputRes.ok) {
@@ -222,6 +239,38 @@ export default function TerminalPage() {
     }
   }
 
+  async function handleFreeze() {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/freeze`, { method: 'POST' });
+      if (res.ok) {
+        setEnded(true);
+        fetchSession();
+      } else {
+        const data = await res.json();
+        toast(data.error || 'Failed to freeze session');
+      }
+    } catch {
+      toast('Failed to freeze session');
+    }
+  }
+
+  async function handleUnfreeze() {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/unfreeze`, { method: 'POST' });
+      if (res.ok) {
+        setEnded(false);
+        setIsHistorical(false);
+        setHistoricalScrollback(null);
+        fetchSession();
+      } else {
+        const data = await res.json();
+        toast(data.error || 'Failed to unfreeze session');
+      }
+    } catch {
+      toast('Failed to unfreeze session');
+    }
+  }
+
   function handleCopyLogs() {
     let content = '';
     if (isHistorical && historicalXtermRef.current) {
@@ -232,34 +281,161 @@ export default function TerminalPage() {
         if (line) lines.push(line.translateToString());
       }
       content = lines.join('\n');
-    } else if (terminalRef.current) {
-      content = terminalRef.current.getBufferContent();
+    } else {
+      // Use active pane's terminal
+      const activeRef = paneRefs.current.get(activePaneId) || terminalRef.current;
+      if (activeRef) {
+        content = activeRef.getBufferContent();
+      }
     }
     navigator.clipboard.writeText(content);
     setCopySuccess(true);
     setTimeout(() => setCopySuccess(false), 2000);
   }
 
-  function handleSearchClick() {
+  function openSearchForActivePane() {
     if (isHistorical) {
       setSearchAddon(historicalSearchRef.current);
-    } else if (terminalRef.current) {
-      setSearchAddon(terminalRef.current.getSearchAddon());
+    } else {
+      const activeRef = paneRefs.current.get(activePaneId);
+      if (activeRef) {
+        setSearchAddon(activeRef.getSearchAddon());
+      } else if (terminalRef.current) {
+        setSearchAddon(terminalRef.current.getSearchAddon());
+      }
     }
     setSearchOpen(true);
   }
 
+  function handleSearchClick() {
+    openSearchForActivePane();
+  }
+
   const handleInput = useCallback((data: string) => {
-    if (terminalRef.current) {
-      terminalRef.current.sendInput(data);
+    const activeRef = paneRefs.current.get(activePaneId) || terminalRef.current;
+    if (activeRef) {
+      activeRef.sendInput(data);
     }
-  }, []);
+  }, [activePaneId]);
 
   function getWsUrl() {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const base = `${proto}//${window.location.host}/ws/sessions/${sessionId}`;
     return wsToken ? `${base}?token=${wsToken}` : base;
   }
+
+  // --- Split layout handlers ---
+
+  async function handleSplit(paneId: string, direction: SplitDirection) {
+    if (!session) return;
+
+    try {
+      // Create a new session for the new pane
+      const res = await fetch('/api/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: session.projectId }),
+      });
+      if (!res.ok) {
+        toast('Failed to create split session');
+        return;
+      }
+      const newSession = await res.json();
+      const newPaneId = crypto.randomUUID();
+
+      const currentLeaf = findLeaf(layout, paneId);
+      if (!currentLeaf) return;
+
+      const splitNode: PaneNode = {
+        type: 'split',
+        direction,
+        ratio: 0.5,
+        first: currentLeaf,
+        second: { type: 'leaf', sessionId: newSession.id, paneId: newPaneId },
+      };
+
+      setLayout(replaceLeaf(layout, paneId, splitNode));
+      setActivePaneId(newPaneId);
+    } catch {
+      toast('Failed to create split session');
+    }
+  }
+
+  async function handleClosePane(paneId: string) {
+    const leaves = getAllLeaves(layout);
+    if (leaves.length <= 1) return; // Don't close the last pane
+
+    const leaf = findLeaf(layout, paneId);
+    if (!leaf) return;
+
+    // Remove the pane from layout
+    const newLayout = removeLeaf(layout, paneId);
+    if (!newLayout) return;
+
+    setLayout(newLayout);
+
+    // If closing the active pane, switch to another
+    if (activePaneId === paneId) {
+      const remaining = getAllLeaves(newLayout);
+      if (remaining.length > 0) {
+        setActivePaneId(remaining[0].paneId);
+      }
+    }
+
+    // Kill the session for the closed pane (don't kill the original session)
+    if (leaf.sessionId !== sessionId) {
+      try {
+        await fetch(`/api/sessions/${leaf.sessionId}`, { method: 'DELETE' });
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  }
+
+  function handlePaneSessionEnd(paneId: string) {
+    setLayout(prev => {
+      const leaves = getAllLeaves(prev);
+      if (leaves.length <= 1) {
+        // Last pane — keep current ended behavior
+        setEnded(true);
+        fetchSession();
+        return prev;
+      }
+      const newLayout = removeLeaf(prev, paneId);
+      if (!newLayout) {
+        setEnded(true);
+        fetchSession();
+        return prev;
+      }
+      // Clean up the pane ref
+      paneRefs.current.delete(paneId);
+      // Reassign active pane if needed
+      if (activePaneId === paneId) {
+        const remaining = getAllLeaves(newLayout);
+        if (remaining.length > 0) {
+          setActivePaneId(remaining[0].paneId);
+        }
+      }
+      return newLayout;
+    });
+  }
+
+  function handlePaneConnectionChange(paneId: string, status: string) {
+    // Track connection status for the active pane
+    if (paneId === activePaneId) {
+      setConnectionStatus(status as 'connecting' | 'connected' | 'disconnected');
+    }
+  }
+
+  // Auto-focus the active pane's terminal so user can type immediately
+  const handlePaneFocus = useCallback((paneId: string) => {
+    setActivePaneId(paneId);
+    // Small delay to let React render the active state, then focus
+    setTimeout(() => {
+      const handle = paneRefs.current.get(paneId);
+      if (handle) handle.focus();
+    }, 0);
+  }, []);
 
   if (loading) {
     return (
@@ -282,6 +458,20 @@ export default function TerminalPage() {
       </main>
     );
   }
+
+  // Render conversation view for conversation-type sessions
+  if (session?.type === 'conversation') {
+    return (
+      <div
+        className="flex flex-col bg-obsidian pb-16 md:pb-0"
+        style={{ height: viewportHeight }}
+      >
+        <ConversationPane session={session} />
+      </div>
+    );
+  }
+
+  const isSplit = layout.type === 'split';
 
   return (
     <div
@@ -308,6 +498,20 @@ export default function TerminalPage() {
         </div>
       )}
 
+      {/* Frozen banner */}
+      {session?.status === 'frozen' && (
+        <div className="bg-cyan-500/10 text-cyan-300 px-4 py-2 text-xs text-center border-b border-cyan-500/20 flex items-center justify-center gap-3">
+          <Snowflake className="w-3 h-3" />
+          <span>Session is frozen</span>
+          <button
+            onClick={handleUnfreeze}
+            className="underline hover:text-cyan-200 transition-colors font-medium"
+          >
+            Unfreeze to continue
+          </button>
+        </div>
+      )}
+
       {/* Floating toolbar */}
       <FloatingToolbar position="top-right" autoHide autoHideDelay={3000}>
         <IconButton
@@ -316,7 +520,23 @@ export default function TerminalPage() {
           onClick={() => router.push('/sessions')}
           size="sm"
         />
-        {isHistorical && (
+        {session?.status === 'frozen' && (
+          <>
+            <IconButton
+              icon={Play}
+              label="Unfreeze session"
+              onClick={handleUnfreeze}
+              size="sm"
+            />
+            <IconButton
+              icon={RotateCcw}
+              label={restoring ? 'Restoring...' : 'Restore session'}
+              onClick={handleRestore}
+              size="sm"
+            />
+          </>
+        )}
+        {isHistorical && session?.status !== 'frozen' && (
           <IconButton
             icon={RotateCcw}
             label={restoring ? 'Restoring...' : 'Restore session'}
@@ -325,13 +545,21 @@ export default function TerminalPage() {
           />
         )}
         {!ended && !isHistorical && (
-          <IconButton
-            icon={Square}
-            label="Stop session"
-            variant="danger"
-            onClick={handleStop}
-            size="sm"
-          />
+          <>
+            <IconButton
+              icon={Snowflake}
+              label="Freeze session"
+              onClick={handleFreeze}
+              size="sm"
+            />
+            <IconButton
+              icon={Square}
+              label="Stop session"
+              variant="danger"
+              onClick={handleStop}
+              size="sm"
+            />
+          </>
         )}
         <IconButton
           icon={ClipboardCopy}
@@ -340,6 +568,30 @@ export default function TerminalPage() {
           onClick={handleCopyLogs}
           size="sm"
         />
+        {!isHistorical && (
+          <>
+            <IconButton
+              icon={SplitSquareVertical}
+              label="Split down"
+              onClick={() => handleSplit(activePaneId, 'horizontal')}
+              size="sm"
+            />
+            <IconButton
+              icon={SplitSquareHorizontal}
+              label="Split right"
+              onClick={() => handleSplit(activePaneId, 'vertical')}
+              size="sm"
+            />
+            {isSplit && (
+              <IconButton
+                icon={XCircle}
+                label="Close pane"
+                onClick={() => handleClosePane(activePaneId)}
+                size="sm"
+              />
+            )}
+          </>
+        )}
         <IconButton
           icon={Search}
           label="Search"
@@ -355,21 +607,41 @@ export default function TerminalPage() {
         onClose={() => setSearchOpen(false)}
       />
 
-      {/* Terminal - full height */}
+      {/* Terminal area */}
       <div className="flex-1" style={{ minHeight: 0 }}>
         {isHistorical ? (
           <div ref={historicalTermRef} className="h-full bg-obsidian" style={{ minHeight: 0 }} />
         ) : wsReady ? (
-          <Terminal
-            ref={terminalRef}
-            sessionId={sessionId}
-            wsUrl={getWsUrl()}
-            onSessionEnd={() => {
-              setEnded(true);
-              fetchSession();
-            }}
-            onConnectionChange={setConnectionStatus}
-          />
+          isSplit ? (
+            <SplitTerminalLayout
+              layout={layout}
+              activePaneId={activePaneId}
+              onPaneFocus={handlePaneFocus}
+              onSplit={handleSplit}
+              onClosePane={handleClosePane}
+              onLayoutChange={setLayout}
+              paneRefs={paneRefs}
+              wsToken={wsToken}
+              onSessionEnd={handlePaneSessionEnd}
+              onConnectionChange={handlePaneConnectionChange}
+            />
+          ) : (
+            <div className="h-full">
+              <Terminal
+                ref={(handle) => {
+                  (terminalRef as React.MutableRefObject<TerminalHandle | null>).current = handle;
+                  if (handle) paneRefs.current.set('root', handle);
+                }}
+                sessionId={sessionId}
+                wsUrl={getWsUrl()}
+                onSessionEnd={() => {
+                  setEnded(true);
+                  fetchSession();
+                }}
+                onConnectionChange={setConnectionStatus}
+              />
+            </div>
+          )
         ) : (
           <div className="flex items-center justify-center h-full bg-obsidian">
             <p className="text-gray-500 text-sm">Connecting...</p>

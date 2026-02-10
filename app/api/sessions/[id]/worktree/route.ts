@@ -1,18 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getApiServer, getAuthHeaders } from '../../_helpers';
+import { getApiServer, getAuthHeaders } from '../../../_helpers';
 
 const API_SERVER = getApiServer();
 
-export async function PUT(
+export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
-    const body = await request.json();
-    const res = await fetch(`${API_SERVER}/api/projects/${params.id}`, {
-      method: 'PUT',
-      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+    const res = await fetch(`${API_SERVER}/api/sessions/${params.id}/worktree`, {
+      headers: getAuthHeaders(),
     });
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
@@ -26,7 +23,7 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
-    const res = await fetch(`${API_SERVER}/api/projects/${params.id}`, {
+    const res = await fetch(`${API_SERVER}/api/sessions/${params.id}/worktree`, {
       method: 'DELETE',
       headers: getAuthHeaders(),
     });

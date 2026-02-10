@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Play, MoreVertical, Trash2, Terminal, Zap, FolderPlus, RotateCcw, ChevronDown, History } from 'lucide-react';
+import { Play, MoreVertical, Trash2, Terminal, Zap, FolderPlus, RotateCcw, ChevronDown, History, Pencil } from 'lucide-react';
 import GlassCard from './components/ui/GlassCard';
 import StatusDot from './components/ui/StatusDot';
 import { useToast } from './components/ui/Toast';
@@ -321,6 +321,18 @@ export default function Dashboard() {
 
                   {menuOpen === project.id && (
                     <div className="absolute right-0 top-8 w-36 bg-void border border-white/10 rounded-lg shadow-xl z-10 overflow-hidden animate-scale-in" role="menu">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMenuOpen(null);
+                          router.push('/projects');
+                        }}
+                        role="menuitem"
+                        className="flex items-center gap-2 w-full px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-white/5 transition-colors"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                        Edit
+                      </button>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
