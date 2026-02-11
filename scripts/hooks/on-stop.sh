@@ -28,11 +28,20 @@ if [ -n "$API_TOKEN" ]; then
   AUTH_HEADER="Authorization: Bearer $API_TOKEN"
 fi
 
+# Portable reverse-file reader (tac on Linux, tail -r on macOS/BSD)
+reverse_file() {
+  if command -v tac >/dev/null 2>&1; then
+    tac "$1"
+  else
+    tail -r "$1"
+  fi
+}
+
 # Read last assistant message from transcript for a meaningful summary
 SUMMARY="Task completed"
 if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
   # Extract last assistant text content from JSONL transcript
-  LAST_MSG=$(tac "$TRANSCRIPT_PATH" 2>/dev/null | while IFS= read -r line; do
+  LAST_MSG=$(reverse_file "$TRANSCRIPT_PATH" 2>/dev/null | while IFS= read -r line; do
     ROLE=$(echo "$line" | jq -r '.type // empty' 2>/dev/null)
     if [ "$ROLE" = "assistant" ]; then
       # Get the last text content block

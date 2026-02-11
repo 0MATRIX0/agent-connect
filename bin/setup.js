@@ -61,11 +61,20 @@ async function runSetup() {
     }
     print('  Installing Tailscale...');
     try {
-      execSync('curl -fsSL https://tailscale.com/install.sh | sh', { stdio: 'inherit' });
+      if (process.platform === 'darwin') {
+        execSync('brew install --cask tailscale', { stdio: 'inherit' });
+      } else {
+        execSync('curl -fsSL https://tailscale.com/install.sh | sh', { stdio: 'inherit' });
+      }
       print('  Tailscale installed successfully.');
     } catch (e) {
       print('  Failed to install Tailscale. Please install manually:');
-      print('  https://tailscale.com/download');
+      if (process.platform === 'darwin') {
+        print('  brew install --cask tailscale');
+        print('  Or install from the Mac App Store: https://apps.apple.com/app/tailscale/id1475387142');
+      } else {
+        print('  https://tailscale.com/download');
+      }
       rl.close();
       process.exit(1);
     }
@@ -88,7 +97,12 @@ async function runSetup() {
       // Re-check status
       tailscaleStatus = JSON.parse(exec('tailscale status --json'));
     } catch (e) {
-      print('  Failed to start Tailscale. Please run: sudo tailscale up');
+      if (process.platform === 'darwin') {
+        print('  Failed to start Tailscale. Please run: open -a Tailscale');
+        print('  Then run: tailscale up');
+      } else {
+        print('  Failed to start Tailscale. Please run: sudo tailscale up');
+      }
       rl.close();
       process.exit(1);
     }
