@@ -18,13 +18,27 @@ function ensureTailscale(config, runtimePorts) {
   } catch {
     ui.printWarning('Tailscale', 'starting tailscaled...');
     try {
-      execSync('sudo systemctl start tailscaled', { stdio: 'inherit' });
+      if (process.platform === 'darwin') {
+        // macOS: try brew services first, then fall back to GUI app
+        try {
+          execSync('brew services start tailscale', { stdio: 'inherit' });
+        } catch {
+          execSync('open -a Tailscale', { stdio: 'inherit' });
+        }
+      } else {
+        execSync('sudo systemctl start tailscaled', { stdio: 'inherit' });
+      }
       // Wait briefly for it to connect
       execSync('tailscale status --json', { stdio: 'pipe', timeout: 10000 });
       ui.printStatus('Tailscale', 'started');
     } catch (err) {
       ui.printError('Tailscale: failed to start tailscaled');
-      ui.printError('Run manually: sudo systemctl start tailscaled');
+      if (process.platform === 'darwin') {
+        ui.printError('Run manually: brew services start tailscale');
+        ui.printError('Or open the Tailscale app from Applications');
+      } else {
+        ui.printError('Run manually: sudo systemctl start tailscaled');
+      }
       process.exit(1);
     }
   }

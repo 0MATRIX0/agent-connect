@@ -17,7 +17,7 @@ fi
 
 # Guard: need a transcript file to save
 if [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
-  echo "$(date -Iseconds) on-clear: no transcript at '$TRANSCRIPT_PATH'" >> "$LOG_FILE" 2>/dev/null
+  echo "$(date '+%Y-%m-%dT%H:%M:%S') on-clear: no transcript at '$TRANSCRIPT_PATH'" >> "$LOG_FILE" 2>/dev/null
   exit 0
 fi
 
@@ -42,7 +42,7 @@ jq -n --rawfile transcript "$TRANSCRIPT_PATH" --arg path "$CWD" \
   '{projectPath: $path, transcript: $transcript}' > "$TMPFILE"
 
 if [ $? -ne 0 ]; then
-  echo "$(date -Iseconds) on-clear: jq failed building body" >> "$LOG_FILE" 2>/dev/null
+  echo "$(date '+%Y-%m-%dT%H:%M:%S') on-clear: jq failed building body" >> "$LOG_FILE" 2>/dev/null
   exit 0
 fi
 
@@ -59,7 +59,7 @@ else
 fi
 
 if [ "$HTTP_CODE" -ge 400 ] 2>/dev/null; then
-  echo "$(date -Iseconds) on-clear: POST /api/conversations failed with HTTP $HTTP_CODE" >> "$LOG_FILE" 2>/dev/null
+  echo "$(date '+%Y-%m-%dT%H:%M:%S') on-clear: POST /api/conversations failed with HTTP $HTTP_CODE" >> "$LOG_FILE" 2>/dev/null
 fi
 
 exit 0
