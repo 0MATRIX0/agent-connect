@@ -1,22 +1,32 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Play, Plus, ChevronDown } from 'lucide-react';
+import { Play, Plus, ChevronDown, GitBranch } from 'lucide-react';
 import Drawer from '../ui/Drawer';
 
 interface Project {
   id: string;
   name: string;
   path: string;
+  isGitRepo?: boolean;
 }
+
+interface Worktree {
+  path: string;
+  branch?: string;
+  head?: string;
+}
+
+type WorktreeMode = 'none' | 'new' | 'existing';
 
 interface CreateSessionModalProps {
   open: boolean;
   onClose: () => void;
   onSessionCreated: (sessionId: string) => void;
+  preselectedProjectId?: string | null;
 }
 
-export default function CreateSessionModal({ open, onClose, onSessionCreated }: CreateSessionModalProps) {
+export default function CreateSessionModal({ open, onClose, onSessionCreated, preselectedProjectId }: CreateSessionModalProps) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState('');
@@ -29,16 +39,40 @@ export default function CreateSessionModal({ open, onClose, onSessionCreated }: 
   const [newPath, setNewPath] = useState('');
   const [addingProject, setAddingProject] = useState(false);
 
+  // Worktree state
+  const [worktreeMode, setWorktreeMode] = useState<WorktreeMode>('none');
+  const [branchName, setBranchName] = useState('');
+  const [existingWorktrees, setExistingWorktrees] = useState<Worktree[]>([]);
+  const [selectedWorktreePath, setSelectedWorktreePath] = useState('');
+  const [loadingWorktrees, setLoadingWorktrees] = useState(false);
+
+  const selectedProject = projects.find(p => p.id === selectedProjectId);
+  const showWorktreeOptions = selectedProject?.isGitRepo === true;
+
   useEffect(() => {
     if (open) {
       fetchProjects();
       setError('');
-      setSelectedProjectId('');
+      setSelectedProjectId(preselectedProjectId || '');
       setShowAddProject(false);
       setNewName('');
       setNewPath('');
+      resetWorktreeState();
     }
-  }, [open]);
+  }, [open, preselectedProjectId]);
+
+  // Reset worktree state when project changes
+  useEffect(() => {
+    resetWorktreeState();
+  }, [selectedProjectId]);
+
+  function resetWorktreeState() {
+    setWorktreeMode('none');
+    setBranchName('');
+    setExistingWorktrees([]);
+    setSelectedWorktreePath('');
+    setLoadingWorktrees(false);
+  }
 
   async function fetchProjects() {
     setLoadingProjects(true);
@@ -51,6 +85,29 @@ export default function CreateSessionModal({ open, onClose, onSessionCreated }: 
       setError('Failed to load projects');
     } finally {
       setLoadingProjects(false);
+    }
+  }
+
+  async function fetchWorktrees(projectId: string) {
+    setLoadingWorktrees(true);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/worktrees`);
+      if (!res.ok) throw new Error('Failed to fetch worktrees');
+      const data = await res.json();
+      setExistingWorktrees(Array.isArray(data) ? data : []);
+    } catch {
+      setExistingWorktrees([]);
+    } finally {
+      setLoadingWorktrees(false);
+    }
+  }
+
+  function handleWorktreeModeChange(mode: WorktreeMode) {
+    setWorktreeMode(mode);
+    setBranchName('');
+    setSelectedWorktreePath('');
+    if (mode === 'existing' && selectedProjectId) {
+      fetchWorktrees(selectedProjectId);
     }
   }
 
@@ -90,10 +147,21 @@ export default function CreateSessionModal({ open, onClose, onSessionCreated }: 
     setError('');
 
     try {
+      const body: Record<string, unknown> = { projectId: selectedProjectId };
+
+      if (showWorktreeOptions) {
+        if (worktreeMode === 'new') {
+          body.useWorktree = true;
+          if (branchName.trim()) body.branch = branchName.trim();
+        } else if (worktreeMode === 'existing' && selectedWorktreePath) {
+          body.worktreePath = selectedWorktreePath;
+        }
+      }
+
       const res = await fetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: selectedProjectId }),
+        body: JSON.stringify(body),
       });
 
       const data = await res.json();
@@ -110,6 +178,9 @@ export default function CreateSessionModal({ open, onClose, onSessionCreated }: 
       setLaunching(false);
     }
   }
+
+  const launchDisabled = !selectedProjectId || launching ||
+    (worktreeMode === 'existing' && !selectedWorktreePath);
 
   return (
     <Drawer open={open} onClose={onClose} title="Create Session" side="right">
@@ -193,6 +264,73 @@ export default function CreateSessionModal({ open, onClose, onSessionCreated }: 
           </form>
         )}
 
+        {/* Worktree options - only for git repos */}
+        {showWorktreeOptions && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-gray-300">
+              <GitBranch className="w-4 h-4" />
+              Worktree
+            </div>
+            <div className="flex gap-1 p-1 rounded-lg bg-white/5 border border-white/10">
+              {(['none', 'new', 'existing'] as const).map(mode => (
+                <button
+                  key={mode}
+                  onClick={() => handleWorktreeModeChange(mode)}
+                  className={`flex-1 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                    worktreeMode === mode
+                      ? 'bg-white/10 text-white'
+                      : 'text-gray-400 hover:text-gray-300'
+                  }`}
+                >
+                  {mode === 'none' ? 'None' : mode === 'new' ? 'New worktree' : 'Use existing'}
+                </button>
+              ))}
+            </div>
+
+            {worktreeMode === 'new' && (
+              <div>
+                <label htmlFor="branch-name" className="block text-xs text-gray-500 mb-1">
+                  Branch name (optional, auto-generated if empty)
+                </label>
+                <input
+                  id="branch-name"
+                  type="text"
+                  placeholder="e.g. feature/my-feature"
+                  value={branchName}
+                  onChange={(e) => setBranchName(e.target.value)}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-white/20 transition-colors font-mono"
+                />
+              </div>
+            )}
+
+            {worktreeMode === 'existing' && (
+              <div>
+                {loadingWorktrees ? (
+                  <p className="text-sm text-gray-500">Loading worktrees...</p>
+                ) : existingWorktrees.length === 0 ? (
+                  <p className="text-sm text-gray-500">No worktrees found</p>
+                ) : (
+                  <div className="relative">
+                    <select
+                      value={selectedWorktreePath}
+                      onChange={(e) => setSelectedWorktreePath(e.target.value)}
+                      className="w-full appearance-none bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 pr-8 text-sm text-white focus:outline-none focus:border-white/20 transition-colors"
+                    >
+                      <option value="" className="bg-void text-gray-400">Select a worktree...</option>
+                      {existingWorktrees.map(w => (
+                        <option key={w.path} value={w.path} className="bg-void text-white">
+                          {w.branch || 'detached'} — {w.path}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Error */}
         {error && (
           <p className="text-sm text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">
@@ -203,7 +341,7 @@ export default function CreateSessionModal({ open, onClose, onSessionCreated }: 
         {/* Launch button */}
         <button
           onClick={handleLaunch}
-          disabled={!selectedProjectId || launching}
+          disabled={launchDisabled}
           className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-30 disabled:cursor-not-allowed"
         >
           <Play className="w-4 h-4" />

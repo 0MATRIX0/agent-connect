@@ -14,6 +14,7 @@ const os = require('os');
 const projects = require('./lib/server/projects');
 const sessionManager = require('./lib/server/sessions');
 const notifications = require('./lib/server/notifications');
+const worktree = require('./lib/server/worktree');
 
 const crypto = require('crypto');
 
@@ -446,6 +447,24 @@ async function handleRequest(req, res) {
             }
         }
 
+        // List worktrees for a project
+        const projectWorktreeMatch = pathname.match(/^\/api\/projects\/([^/]+)\/worktrees$/);
+        if (projectWorktreeMatch && req.method === 'GET') {
+            const project = projects.getProject(projectWorktreeMatch[1]);
+            if (!project) {
+                return sendJson(res, 404, { error: 'Project not found' }, req);
+            }
+            if (!worktree.isGitRepo(project.path)) {
+                return sendJson(res, 200, [], req);
+            }
+            try {
+                const worktrees = worktree.listWorktrees(project.path);
+                return sendJson(res, 200, worktrees, req);
+            } catch (error) {
+                return sendJson(res, 500, { error: error.message }, req);
+            }
+        }
+
         // Update a project
         const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
         if (projectMatch && req.method === 'PUT') {
@@ -482,7 +501,7 @@ async function handleRequest(req, res) {
 
         // Launch a session
         if (pathname === '/api/sessions' && req.method === 'POST') {
-            const { projectId, branch } = await parseBody(req);
+            const { projectId, branch, useWorktree, worktreePath } = await parseBody(req);
             if (!projectId || typeof projectId !== 'string') {
                 return sendJson(res, 400, { error: 'projectId is required and must be a string' }, req);
             }
@@ -493,6 +512,8 @@ async function handleRequest(req, res) {
             try {
                 const opts = {};
                 if (branch && typeof branch === 'string') opts.branch = branch;
+                if (useWorktree === true) opts.useWorktree = true;
+                if (worktreePath && typeof worktreePath === 'string') opts.worktreePath = worktreePath;
                 const session = sessionManager.createSession(project.id, project.name, project.path, opts);
                 return sendJson(res, 201, session, req);
             } catch (error) {
