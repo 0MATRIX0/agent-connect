@@ -6,6 +6,7 @@ import { Reorder, useDragControls } from 'framer-motion';
 import { Play, Trash2, FolderOpen, Pencil, Check, X, GripVertical } from 'lucide-react';
 import GlassCard from '../components/ui/GlassCard';
 import IconButton from '../components/ui/IconButton';
+import CreateSessionModal from '../components/sessions/CreateSessionModal';
 
 interface Project {
   id: string;
@@ -148,6 +149,8 @@ export default function ProjectsPage() {
   const [editPath, setEditPath] = useState('');
   const [updating, setUpdating] = useState(false);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [preselectedProjectId, setPreselectedProjectId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchProjects();
@@ -229,30 +232,13 @@ export default function ProjectsPage() {
     }
   }
 
-  async function handleLaunchSession(project: Project) {
-    setLaunching(project.id);
-    setError('');
+  function handleLaunchSession(project: Project) {
+    setPreselectedProjectId(project.id);
+    setShowCreateModal(true);
+  }
 
-    try {
-      const res = await fetch('/api/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: project.id }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        setError(data.error || 'Failed to launch session');
-        return;
-      }
-
-      router.push(`/sessions?new=${data.id}`);
-    } catch {
-      setError('Failed to launch session');
-    } finally {
-      setLaunching(null);
-    }
+  function handleSessionCreated(sessionId: string) {
+    router.push(`/sessions?new=${sessionId}`);
   }
 
   function startEditing(project: Project) {
@@ -378,6 +364,13 @@ export default function ProjectsPage() {
           ))}
         </Reorder.Group>
       )}
+
+      <CreateSessionModal
+        open={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        onSessionCreated={handleSessionCreated}
+        preselectedProjectId={preselectedProjectId}
+      />
     </main>
   );
 }
