@@ -332,7 +332,7 @@ async function handleRequest(req, res) {
             });
 
             // Skip push notification if user is actively on the app (has WebSocket connections)
-            if (sessions.hasActiveClients()) {
+            if (sessionManager.hasActiveClients()) {
                 return sendJson(res, 200, { success: true, message: 'User is active, push suppressed', sent: 0, suppressed: true }, req);
             }
 
@@ -779,9 +779,13 @@ sessionManager.purgeOldSessions(30);
 const displayHost = process.env.APP_HOSTNAME || HOST;
 
 // WebSocket server for terminal sessions (noServer mode — shares HTTP server)
-const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
 
 server.on('upgrade', (request, socket, head) => {
+    socket.on('error', (err) => {
+        console.error('[ws] Socket error during upgrade:', err.message);
+    });
+
     const url = new URL(request.url, `http://localhost:${PORT}`);
     const wsMatch = url.pathname.match(/^\/ws\/sessions\/([^/]+)$/);
 
@@ -820,6 +824,10 @@ server.on('upgrade', (request, socket, head) => {
     }
 
     wss.handleUpgrade(request, socket, head, (ws) => {
+        ws.on('error', (err) => {
+            console.error(`[ws] Client error for session ${sessionId}:`, err.message);
+        });
+
         // Attach client to session
         sessionManager.attachClient(sessionId, ws);
 
@@ -867,7 +875,7 @@ const pingInterval = setInterval(() => {
 
 // Graceful shutdown
 function shutdown() {
-    console.log('\nShutting down...');
+    console.log('\nShutting down (tmux sessions will be frozen and survive)...');
     clearInterval(pingInterval);
     sessionManager.cleanupAllSessions();
     wss.close();
@@ -880,6 +888,15 @@ function shutdown() {
 
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
+
+// Safety net: catch unhandled errors to prevent server crashes
+process.on('uncaughtException', (err) => {
+    console.error('[fatal] Uncaught exception:', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+    console.error('[fatal] Unhandled rejection:', reason);
+});
 
 server.listen(PORT, HOST, () => {
     console.log(`Agent Notifier API server running on ${protocol}://${HOST}:${PORT}`);
